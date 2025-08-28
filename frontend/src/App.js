@@ -2,11 +2,21 @@ import React, { useState, useEffect, createContext, useContext } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import axios from 'axios';
 import Cookies from 'js-cookie';
+
+// Components
+import Layout from './components/Layout';
+
+// Pages
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import ReportPage from './pages/ReportPage';
+import DailySavedDataPage from './pages/DailySavedDataPage';
+import CustomerDataPage from './pages/CustomerDataPage';
+import RawDataPage from './pages/RawDataPage';
+import PLReportPage from './pages/PLReportPage';
+
 import './App.css';
 
 // Create Auth Context
@@ -34,7 +44,6 @@ const AuthProvider = ({ children }) => {
     const token = Cookies.get('auth_token');
     if (token) {
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      // Verify token validity
       verifyToken();
     } else {
       setLoading(false);
@@ -46,7 +55,7 @@ const AuthProvider = ({ children }) => {
       const response = await axios.get('/api/auth/profile');
       setUser(response.data.user);
     } catch (error) {
-      // Token is invalid, remove it
+      console.error('Token verification failed:', error);
       logout();
     } finally {
       setLoading(false);
@@ -108,7 +117,6 @@ const AuthProvider = ({ children }) => {
     try {
       await axios.post('/api/auth/logout');
     } catch (error) {
-      // Logout on frontend even if backend fails
       console.error('Logout error:', error);
     } finally {
       // Clear token and user data
@@ -131,7 +139,7 @@ const AuthProvider = ({ children }) => {
       <div className="app loading-container">
         <div className="loading-spinner">
           <div className="spinner"></div>
-          <p>Loading...</p>
+          <p>Loading iTradeBook...</p>
         </div>
       </div>
     );
@@ -147,7 +155,7 @@ const AuthProvider = ({ children }) => {
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
   const { isAuthenticated } = useAuth();
-  return isAuthenticated ? children : <Navigate to="/login" replace />;
+  return isAuthenticated ? <Layout>{children}</Layout> : <Navigate to="/login" replace />;
 };
 
 // Public Route Component (redirects to dashboard if authenticated)
@@ -202,6 +210,38 @@ const App = () => {
             element={
               <ProtectedRoute>
                 <ReportPage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/daily-saved-data" 
+            element={
+              <ProtectedRoute>
+                <DailySavedDataPage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/customer-data" 
+            element={
+              <ProtectedRoute>
+                <CustomerDataPage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/raw-data" 
+            element={
+              <ProtectedRoute>
+                <RawDataPage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/pl-report" 
+            element={
+              <ProtectedRoute>
+                <PLReportPage />
               </ProtectedRoute>
             } 
           />
