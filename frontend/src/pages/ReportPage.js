@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { useAuth } from '../App';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useAuth, axiosInstance, STORAGE_KEYS } from '../App';
 import TradingTable from '../components/TradingTable';
 import axios from 'axios';
+import Select from 'react-select';
 
 const ReportPage = () => {
   const { user, logout } = useAuth();
@@ -27,33 +28,156 @@ const ReportPage = () => {
     limit: 30
   });
 
+  // react-select styles (keeps dropdown above modals/overflow)
+// put this where you define selectStyles
+const selectStyles = {
+  menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+
+  control: (base, state) => ({
+    ...base,
+    minHeight: 42,
+    backgroundColor: 'var(--bg-input)',
+    borderColor: state.isFocused ? 'var(--accent-primary)' : 'var(--border-color)',
+    boxShadow: state.isFocused ? '0 0 0 3px rgb(59 130 246 / 0.10)' : 'none',
+    ':hover': { borderColor: 'var(--accent-primary)' },
+    color: 'var(--text-primary)',
+  }),
+
+  placeholder: (base) => ({
+    ...base,
+    color: 'var(--text-muted)',
+  }),
+  input: (base) => ({
+    ...base,
+    color: 'var(--text-primary)',
+  }),
+  singleValue: (base) => ({
+    ...base,
+    color: 'var(--text-primary)',
+  }),
+  valueContainer: (base) => ({
+    ...base,
+    padding: '2px 8px',
+    color: 'var(--text-primary)',
+  }),
+
+  multiValue: (base) => ({
+    ...base,
+    backgroundColor: 'rgba(59,130,246,.15)',                // accent-primary @ 15%
+    border: '1px solid var(--accent-primary)',
+  }),
+  multiValueLabel: (base) => ({
+    ...base,
+    color: 'var(--text-primary)',
+    fontWeight: 600,
+  }),
+  multiValueRemove: (base) => ({
+    ...base,
+    color: 'var(--text-secondary)',
+    ':hover': { backgroundColor: 'rgba(239,68,68,.25)', color: '#fff' }, // error color
+  }),
+
+  indicatorsContainer: (base) => ({ ...base, color: 'var(--text-secondary)' }),
+  dropdownIndicator: (base) => ({
+    ...base, color: 'var(--text-secondary)',
+    ':hover': { color: 'var(--text-primary)' },
+  }),
+  clearIndicator: (base) => ({
+    ...base, color: 'var(--text-secondary)',
+    ':hover': { color: 'var(--accent-error)' },
+  }),
+
+  menu: (base) => ({
+    ...base,
+    backgroundColor: 'var(--bg-card)',
+    border: '1px solid var(--border-color)',
+    boxShadow: 'var(--shadow-lg)',
+    color: 'var(--text-primary)',
+    overflow: 'hidden',
+  }),
+  menuList: (base) => ({
+    ...base,
+    backgroundColor: 'var(--bg-card)',
+    padding: 4,
+  }),
+  option: (base, state) => ({
+    ...base,
+    backgroundColor: state.isSelected
+      ? 'rgba(59,130,246,.25)'  // selected
+      : state.isFocused
+      ? 'rgba(59,130,246,.12)'  // hover
+      : 'transparent',
+    color: 'var(--text-primary)',
+    ':active': { backgroundColor: 'rgba(59,130,246,.25)' },
+  }),
+};
+
+
+  // Options for react-select
+  const symbolOptions = useMemo(
+    () => symbols.map(s => ({ value: s, label: s })),
+    [symbols]
+  );
+  const refidOptions = useMemo(
+    () => refids.map(r => ({ value: r, label: r })),
+    [refids]
+  );
+
   // Load initial data
   useEffect(() => {
     loadSymbols();
     loadRefids();
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Load data when filters change
   useEffect(() => {
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
 
   const loadSymbols = async () => {
     try {
+      const token = localStorage.getItem(STORAGE_KEYS.TOKEN);
+      if (!token) {
+        console.log('No token found in loadSymbols');
+        window.location.href = '/login';
+        return;
+      }
       const response = await axios.get('/api/symbols');
-      setSymbols(response.data);
+      setSymbols(response.data || []);
     } catch (error) {
-      console.error('Failed to load symbols:', error);
+      if (error.response?.status === 401) {
+        console.log('Token validation failed in loadSymbols');
+        localStorage.removeItem(STORAGE_KEYS.TOKEN);
+        localStorage.removeItem(STORAGE_KEYS.USER);
+        window.location.href = '/login';
+      } else {
+        console.error('Failed to load symbols:', error);
+      }
     }
   };
 
   const loadRefids = async () => {
     try {
+      const token = localStorage.getItem(STORAGE_KEYS.TOKEN);
+      if (!token) {
+        console.log('No token found in loadRefids');
+        window.location.href = '/login';
+        return;
+      }
       const response = await axios.get('/api/refids');
-      setRefids(response.data);
+      setRefids(response.data || []);
     } catch (error) {
-      console.error('Failed to load refids:', error);
+      if (error.response?.status === 401) {
+        console.log('Token validation failed in loadRefids');
+        localStorage.removeItem(STORAGE_KEYS.TOKEN);
+        localStorage.removeItem(STORAGE_KEYS.USER);
+        window.location.href = '/login';
+      } else {
+        console.error('Failed to load refids:', error);
+      }
     }
   };
 
@@ -66,18 +190,30 @@ const ReportPage = () => {
       Object.entries(filters).forEach(([key, value]) => {
         if (Array.isArray(value)) {
           value.forEach(v => params.append(key, v));
-        } else if (value) {
+        } else if (value !== '' && value !== null && value !== undefined) {
           params.append(key, value);
         }
       });
 
+      console.log('Authorization header:', axios.defaults.headers.common['Authorization']);
       const response = await axios.get(`/api/data?${params}`);
-      setData(response.data.rows);
-      setTotalRecords(response.data.total);
+      console.log('Data response:', response.data);
+      
+      setData(response.data?.rows || []);
+      setTotalRecords(response.data?.total || 0);
     } catch (error) {
-      setError(error.response?.data?.error || 'Failed to load data');
-      setData([]);
-      setTotalRecords(0);
+      console.error('Load data error:', error.response || error);
+      if (error.response?.status === 401) {
+        console.log('Token validation failed in loadData');
+        // Clear auth state and redirect
+        localStorage.removeItem(STORAGE_KEYS.TOKEN);
+        localStorage.removeItem(STORAGE_KEYS.USER);
+        window.location.href = '/login';
+      } else {
+        setError(error.response?.data?.error || 'Failed to load data');
+        setData([]);
+        setTotalRecords(0);
+      }
     } finally {
       setLoading(false);
     }
@@ -91,16 +227,18 @@ const ReportPage = () => {
     }));
   };
 
+  // Handy handler for react-select multi selects
+  const onMultiChange = (key) => (selected) => {
+    handleFilterChange(key, (selected || []).map(o => o.value));
+  };
+
   const handleBulkDelete = async (ids) => {
     if (!ids.length) return;
-    
-    if (!window.confirm(`Are you sure you want to delete ${ids.length} records?`)) {
-      return;
-    }
+    if (!window.confirm(`Are you sure you want to delete ${ids.length} records?`)) return;
 
     try {
       await axios.delete('/api/data', { data: { ids } });
-      loadData(); // Reload data after successful deletion
+      loadData();
     } catch (error) {
       setError(error.response?.data?.error || 'Failed to delete records');
     }
@@ -109,7 +247,7 @@ const ReportPage = () => {
   const handleInsert = async (formData) => {
     try {
       await axios.post('/api/data', formData);
-      loadData(); // Reload data after successful insertion
+      loadData();
       return { success: true };
     } catch (error) {
       return { 
@@ -157,24 +295,7 @@ const ReportPage = () => {
   return (
     <div className="app">
       {/* Header */}
-      <header className="app-header">
-        <div className="header-content">
-          <div className="header-left">
-            <h1>iTradeBook Dashboard</h1>
-          </div>
-          <div className="header-right">
-            <div className="user-info">
-              <span className="user-welcome">Welcome, {user?.username}</span>
-              {user?.user_type === 'managed' && (
-                <span className="badge">Managed User</span>
-              )}
-            </div>
-            <button onClick={logout} className="logout-button">
-              Logout
-            </button>
-          </div>
-        </div>
-      </header>
+
 
       {/* Main Content */}
       <main className="main-content">
@@ -217,40 +338,36 @@ const ReportPage = () => {
                 />
               </div>
 
-              {/* Symbol Filter */}
+              {/* Symbol Filter — searchable multi-select */}
               <div className="form-group">
                 <label>Symbols</label>
-                <select 
-                  multiple
-                  value={filters.symbolref}
-                  onChange={(e) => {
-                    const selected = Array.from(e.target.selectedOptions, option => option.value);
-                    handleFilterChange('symbolref', selected);
-                  }}
-                  className="h-20"
-                >
-                  {symbols.map(symbol => (
-                    <option key={symbol} value={symbol}>{symbol}</option>
-                  ))}
-                </select>
+                <Select
+                  isMulti
+                  isClearable
+                  options={symbolOptions}
+                  value={symbolOptions.filter(o => filters.symbolref.includes(o.value))}
+                  onChange={onMultiChange('symbolref')}
+                  placeholder="Select symbols…"
+                  classNamePrefix="rs"
+                  styles={selectStyles}
+                  menuPortalTarget={document.body}
+                />
               </div>
 
-              {/* RefID Filter */}
+              {/* RefID Filter — searchable multi-select */}
               <div className="form-group">
                 <label>Tickets</label>
-                <select 
-                  multiple
-                  value={filters.refid}
-                  onChange={(e) => {
-                    const selected = Array.from(e.target.selectedOptions, option => option.value);
-                    handleFilterChange('refid', selected);
-                  }}
-                  className="h-20"
-                >
-                  {refids.map(refid => (
-                    <option key={refid} value={refid}>{refid}</option>
-                  ))}
-                </select>
+                <Select
+                  isMulti
+                  isClearable
+                  options={refidOptions}
+                  value={refidOptions.filter(o => filters.refid.includes(o.value))}
+                  onChange={onMultiChange('refid')}
+                  placeholder="Select tickets…"
+                  classNamePrefix="rs"
+                  styles={selectStyles}
+                  menuPortalTarget={document.body}
+                />
               </div>
 
               {/* Filter Type */}

@@ -13,7 +13,19 @@ const port = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if(!origin) return callback(null, true);
+    
+    // Allow all ngrok URLs and localhost
+    if(origin.includes('ngrok-free.app') || 
+       origin.includes('localhost') || 
+       origin.includes('127.0.0.1')) {
+      return callback(null, true);
+    }
+    
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -23,7 +35,7 @@ app.use(express.json());
 
 app.use(
   session({
-    secret: process.env.SESSION_SECRET || 'itradebook_secret',
+    secret: process.env.SESSION_SECRET || 'itradebort4r3etghyje5t4regasre4t5wy465trtge',
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -113,18 +125,37 @@ const authenticateToken = async (req, res, next) => {
     let conn;
     try {
       conn = await pool.getConnection();
-      const users = await conn.query(
-        'SELECT id, username, email, user_type, is_active FROM users WHERE id = ? AND is_active = TRUE',
+      
+      // Check admin_users first
+      let users = await conn.query(
+        'SELECT id, username, email, "admin" as user_type FROM admin_users WHERE id = ? AND status = "active"',
         [decoded.userId]
       );
+      
+      // If not found, check managed_users
+      if (users.length === 0) {
+        users = await conn.query(
+          'SELECT id, username, email, "managed" as user_type FROM managed_users WHERE id = ? AND status = "active"',
+          [decoded.userId]
+        );
+      }
+      
+      // If still not found, check account_details
+      if (users.length === 0) {
+        users = await conn.query(
+          'SELECT id, Name as username, Email as email, user_type, Verified as is_verified FROM account_details WHERE id = ?',
+          [decoded.userId]
+        );
+      }
       
       if (users.length === 0) {
         return res.status(401).json({ error: 'User not found or inactive' });
       }
       
-      req.user = users[0];
-      req.session.user_id = users[0].id;
-      req.session.user_type = users[0].user_type;
+      const user = users[0];
+      req.user = user;
+      req.session.user_id = user.id;
+      req.session.user_type = user.user_type;
       next();
     } finally {
       if (conn) conn.release();
@@ -178,13 +209,13 @@ async function sendEmail(to, subject, text, html) {
   }
 }
 
-// Initialize database tables
+// Initialize tables on startup
 async function initializeTables() {
   let conn;
   try {
     conn = await pool.getConnection();
     
-    // Create users table if not exists
+    // Create users table
     await conn.query(`
       CREATE TABLE IF NOT EXISTS users (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -198,7 +229,7 @@ async function initializeTables() {
       )
     `);
 
-    // Create user_symbol_permissions table if not exists
+    // Create user_symbol_permissions table
     await conn.query(`
       CREATE TABLE IF NOT EXISTS user_symbol_permissions (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -210,15 +241,40 @@ async function initializeTables() {
       )
     `);
 
-    // Create otps table if not exists
+    // Create trading_comments table
     await conn.query(`
-      CREATE TABLE IF NOT EXISTS otps (
+      CREATE TABLE IF NOT EXISTS trading_comments (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        email VARCHAR(100) NOT NULL,
-        otp_code VARCHAR(10) NOT NULL,
-        purpose VARCHAR(50) NOT NULL,
-        expires_at TIMESTAMP NOT NULL,
-        used BOOLEAN DEFAULT FALSE,
+        symbol_ref VARCHAR(64) NOT NULL,
+        comment TEXT NOT NULL,
+        user_id INT DEFAULT 0,
+        username VARCHAR(50) DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create customer_data table
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS customer_data (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        api_key VARCHAR(255),
+        datetime_server_ts_tz DATETIME,
+        mt5 VARCHAR(50),
+        order_ref VARCHAR(50),
+        direction VARCHAR(10),
+        type VARCHAR(50),
+        volume DECIMAL(20,8),
+        price DECIMAL(20,8),
+        swap DECIMAL(20,8),
+        swap_last DECIMAL(20,8),
+        balance DECIMAL(20,8),
+        equity DECIMAL(20,8),
+        floating DECIMAL(20,8),
+        profit_loss DECIMAL(20,8),
+        profit_loss_last DECIMAL(20,8),
+        symbolrate_name VARCHAR(50),
+        currency VARCHAR(10),
+        volume_total DECIMAL(20,8),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -231,492 +287,33 @@ async function initializeTables() {
   }
 }
 
-// Initialize tables on startup
+// Initialize tables
 initializeTables();
 
-// Auth Routes
-app.post('/api/auth/register', async (req, res) => {
-  const { username, email, password } = req.body;
-  
-  if (!username || !email || !password) {
-    return res.status(400).json({ error: 'All fields are required' });
-  }
+// Import route handlers
+const auth = require('./routes/auth')(pool, authenticateToken, bcrypt, jwt);
+const rawData = require('./routes/rawData')(pool, { authenticateToken, getAllowedSymbols });
+const report = require('./routes/report')(pool, { authenticateToken, getAllowedSymbols });
+const comments = require('./routes/comments')(pool, { authenticateToken, getAllowedSymbols });
+const plReport = require('./routes/plReport')(pool, { authenticateToken, getAllowedSymbols });
+const customerData = require('./routes/customerData')(pool, { authenticateToken, getAllowedSymbols });
 
-  if (password.length < 6) {
-    return res.status(400).json({ error: 'Password must be at least 6 characters long' });
-  }
+// Mount routes
+app.use('/api/auth', auth.router);
+app.use('/api/raw-data', rawData.router);
+app.use('/api/report', report.router);
+app.use('/api/comments', comments.router);
+app.use('/api', plReport.router); // Mount plReport at /api for direct access to /api/get_years, etc.
+app.use('/api/customer-data', customerData.router);
 
-  let conn;
-  try {
-    conn = await pool.getConnection();
-    
-    // Check if user already exists
-    const existingUsers = await conn.query(
-      'SELECT id FROM users WHERE username = ? OR email = ?',
-      [username, email]
-    );
-    
-    if (existingUsers.length > 0) {
-      return res.status(400).json({ error: 'Username or email already exists' });
-    }
-
-    // Hash password
-    const saltRounds = 12;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-    // Create user
-    const result = await conn.query(
-      'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
-      [username, email, hashedPassword]
-    );
-
-    // Generate JWT token
-    const userId = Number(result.insertId);
-    const token = jwt.sign(
-      { userId: userId, username, email },
-      process.env.JWT_SECRET || 'default-secret',
-      { expiresIn: '24h' }
-    );
-
-    const responseData = convertBigIntToNumber({
-      message: 'User created successfully',
-      token,
-      user: {
-        id: userId,
-        username,
-        email,
-        user_type: 'regular'
-      }
-    });
-
-    res.status(201).json(responseData);
-  } catch (err) {
-    console.error('Registration error:', err);
-    res.status(500).json({ error: 'Database error during registration' });
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-app.post('/api/auth/login', async (req, res) => {
-  const { username, password } = req.body;
-
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Username and password are required' });
-  }
-
-  let conn;
-  try {
-    conn = await pool.getConnection();
-    
-    // Find user by username or email
-    const users = await conn.query(
-      'SELECT * FROM users WHERE (username = ? OR email = ?) AND is_active = TRUE',
-      [username, username]
-    );
-
-    if (users.length === 0) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-
-    const user = users[0];
-
-    // Verify password
-    const validPassword = await bcrypt.compare(password, user.password_hash);
-    if (!validPassword) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { userId: user.id, username: user.username, email: user.email },
-      process.env.JWT_SECRET || 'default-secret',
-      { expiresIn: '24h' }
-    );
-
-    // Set session data
-    req.session.user_id = user.id;
-    req.session.user_type = user.user_type;
-
-    const responseData = convertBigIntToNumber({
-      message: 'Login successful',
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        user_type: user.user_type
-      }
-    });
-
-    res.json(responseData);
-  } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ error: 'Database error during login' });
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-app.post('/api/auth/logout', (req, res) => {
-  req.session.destroy((err) => {
-    if (err) {
-      return res.status(500).json({ error: 'Could not log out' });
-    }
-    res.json({ message: 'Logout successful' });
-  });
-});
-
-app.post('/api/auth/forgot-password', async (req, res) => {
-  const { email } = req.body;
-
-  if (!email) {
-    return res.status(400).json({ error: 'Email is required' });
-  }
-
-  let conn;
-  try {
-    conn = await pool.getConnection();
-    
-    // Check if user exists
-    const users = await conn.query('SELECT id FROM users WHERE email = ?', [email]);
-    if (users.length === 0) {
-      return res.json({ message: 'If the email exists, an OTP has been sent' });
-    }
-
-    // Generate OTP
-    const otp = generateOTP();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-
-    // Save OTP to database
-    await conn.query(
-      'INSERT INTO otps (email, otp_code, purpose, expires_at) VALUES (?, ?, ?, ?)',
-      [email, otp, 'password_reset', expiresAt]
-    );
-
-    // Send email
-    const emailSent = await sendEmail(
-      email,
-      'Password Reset - iTradeBook',
-      `Your password reset OTP is: ${otp}\n\nThis OTP will expire in 10 minutes.`,
-      `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #1e293b;">Password Reset - iTradeBook</h2>
-          <p>You requested a password reset. Your OTP is:</p>
-          <div style="background: #f1f5f9; padding: 20px; text-align: center; font-size: 24px; font-weight: bold; color: #1e293b; border-radius: 8px; margin: 20px 0;">
-            ${otp}
-          </div>
-          <p style="color: #64748b;">This OTP will expire in 10 minutes.</p>
-          <p style="color: #64748b;">If you didn't request this, please ignore this email.</p>
-        </div>
-      `
-    );
-
-    if (!emailSent) {
-      return res.status(500).json({ error: 'Failed to send email' });
-    }
-
-    res.json({ message: 'If the email exists, an OTP has been sent' });
-  } catch (err) {
-    console.error('Forgot password error:', err);
-    res.status(500).json({ error: 'Database error' });
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-app.post('/api/auth/reset-password', async (req, res) => {
-  const { email, otp, newPassword } = req.body;
-
-  if (!email || !otp || !newPassword) {
-    return res.status(400).json({ error: 'All fields are required' });
-  }
-
-  if (newPassword.length < 6) {
-    return res.status(400).json({ error: 'Password must be at least 6 characters long' });
-  }
-
-  let conn;
-  try {
-    conn = await pool.getConnection();
-    
-    // Verify OTP
-    const otps = await conn.query(
-      'SELECT * FROM otps WHERE email = ? AND otp_code = ? AND purpose = ? AND expires_at > NOW() AND used = FALSE ORDER BY created_at DESC LIMIT 1',
-      [email, otp, 'password_reset']
-    );
-
-    if (otps.length === 0) {
-      return res.status(400).json({ error: 'Invalid or expired OTP' });
-    }
-
-    // Mark OTP as used
-    await conn.query('UPDATE otps SET used = TRUE WHERE id = ?', [otps[0].id]);
-
-    // Hash new password
-    const saltRounds = 12;
-    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
-
-    // Update user password
-    const result = await conn.query(
-      'UPDATE users SET password_hash = ? WHERE email = ?',
-      [hashedPassword, email]
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    res.json({ message: 'Password reset successful' });
-  } catch (err) {
-    console.error('Reset password error:', err);
-    res.status(500).json({ error: 'Database error' });
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-app.get('/api/auth/profile', authenticateToken, async (req, res) => {
-  const responseData = convertBigIntToNumber({
-    user: {
-      id: req.user.id,
-      username: req.user.username,
-      email: req.user.email,
-      user_type: req.user.user_type
-    }
-  });
-  res.json(responseData);
-});
-
-// Protected Data Routes
-app.get('/api/symbols', authenticateToken, async (req, res) => {
-  let conn;
-  try {
-    conn = await pool.getConnection();
-    const allowed = await getAllowedSymbols(conn, req);
-    
-    let query = 'SELECT DISTINCT symbolref FROM `receive.itradebook` WHERE symbolref IS NOT NULL AND symbolref != ""';
-    const params = [];
-    
-    if (allowed && allowed.length > 0) {
-      query += ` AND symbolref IN (${allowed.map(() => '?').join(',')})`;
-      params.push(...allowed);
-    } else if (Array.isArray(allowed) && allowed.length === 0) {
-      return res.json([]);
-    }
-    
-    query += ' ORDER BY symbolref';
-    const rows = await conn.query(query, params);
-    const symbols = convertBigIntToNumber(rows.map((r) => r.symbolref));
-    res.json(symbols);
-  } catch (err) {
-    console.error('Symbols error:', err);
-    res.status(500).json({ error: 'Database error' });
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-app.get('/api/refids', authenticateToken, async (req, res) => {
-  let conn;
-  try {
-    conn = await pool.getConnection();
-    const allowed = await getAllowedSymbols(conn, req);
-    
-    let query = 'SELECT DISTINCT refid FROM `receive.itradebook` WHERE refid IS NOT NULL AND refid != ""';
-    const params = [];
-    
-    if (allowed && allowed.length > 0) {
-      query += ` AND symbolref IN (${allowed.map(() => '?').join(',')})`;
-      params.push(...allowed);
-    } else if (Array.isArray(allowed) && allowed.length === 0) {
-      return res.json([]);
-    }
-    
-    query += ' ORDER BY refid';
-    const rows = await conn.query(query, params);
-    const refids = convertBigIntToNumber(rows.map((r) => r.refid));
-    res.json(refids);
-  } catch (err) {
-    console.error('Refids error:', err);
-    res.status(500).json({ error: 'Database error' });
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-app.get('/api/data', authenticateToken, async (req, res) => {
-  let conn;
-  try {
-    conn = await pool.getConnection();
-    const allowed = await getAllowedSymbols(conn, req);
-    
-    const limit = Math.min(parseInt(req.query.limit || '30', 10), 100);
-    const page = Math.max(parseInt(req.query.page || '1', 10), 1);
-    const offset = (page - 1) * limit;
-    
-    const validColumns = [
-      'id', 'refid', 'buysize', 'buyprice', 'sellsize', 'sellprice', 
-      'symbolref', 'date', 'type'
-    ];
-    const orderBy = validColumns.includes(req.query.order_by) ? req.query.order_by : 'date';
-    const orderDir = req.query.order_dir === 'asc' ? 'ASC' : 'DESC';
-
-    let filter = ' WHERE 1=1';
-    const params = [];
-
-    // Date range filter
-    if (req.query.start_date && req.query.end_date) {
-      const start = `${req.query.start_date} ${req.query.start_time || '00:00:00'}`;
-      const end = `${req.query.end_date} ${req.query.end_time || '23:59:59'}`;
-      filter += ' AND date BETWEEN ? AND ?';
-      params.push(start, end);
-    }
-
-    // Symbol filter with permissions check
-    if (req.query.symbolref && req.query.symbolref.length > 0) {
-      const symbols = Array.isArray(req.query.symbolref) ? req.query.symbolref : [req.query.symbolref];
-      const allowedSymbols = allowed === null ? symbols : symbols.filter(s => allowed.includes(s));
-      
-      if (allowedSymbols.length > 0) {
-        filter += ` AND symbolref IN (${allowedSymbols.map(() => '?').join(',')})`;
-        params.push(...allowedSymbols);
-      } else if (Array.isArray(allowed)) {
-        // User has restrictions but no allowed symbols match
-        return res.json({ total: 0, rows: [] });
-      }
-    } else if (Array.isArray(allowed)) {
-      // Apply user's symbol restrictions
-      if (allowed.length > 0) {
-        filter += ` AND symbolref IN (${allowed.map(() => '?').join(',')})`;
-        params.push(...allowed);
-      } else {
-        return res.json({ total: 0, rows: [] });
-      }
-    }
-
-    // RefID filter
-    if (req.query.refid && req.query.refid.length > 0) {
-      const refids = Array.isArray(req.query.refid) ? req.query.refid : [req.query.refid];
-      filter += ` AND refid IN (${refids.map(() => '?').join(',')})`;
-      params.push(...refids);
-    }
-
-    // Filter type
-    if (req.query.filter_type === 'snapshot') {
-      filter += ' AND type LIKE ?';
-      params.push('%snapshot%');
-    }
-
-    // Get total count
-    const totalQuery = `SELECT COUNT(*) as count FROM \`receive.itradebook\` ${filter}`;
-    const totalRows = await conn.query(totalQuery, params);
-    const total = Number(totalRows[0]?.count || 0);
-
-    // Get data
-    const dataQuery = `SELECT * FROM \`receive.itradebook\` ${filter} ORDER BY \`${orderBy}\` ${orderDir} LIMIT ? OFFSET ?`;
-    const rows = await conn.query(dataQuery, [...params, limit, offset]);
-
-    const responseData = convertBigIntToNumber({ 
-      total, 
-      rows: rows 
-    });
-    
-    res.json(responseData);
-  } catch (err) {
-    console.error('Data fetch error:', err);
-    res.status(500).json({ error: 'Database error' });
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-app.post('/api/data', authenticateToken, async (req, res) => {
-  const { refid, buysize, buyprice, sellsize, sellprice, symbolref, type } = req.body;
-  
-  let conn;
-  try {
-    conn = await pool.getConnection();
-    const allowed = await getAllowedSymbols(conn, req);
-    
-    if (!refid) {
-      return res.status(400).json({ error: 'RefID is required' });
-    }
-
-    // Check symbol permissions for managed users
-    if (allowed && allowed.length > 0 && symbolref && !allowed.includes(symbolref)) {
-      return res.status(403).json({ error: "You don't have permission to add data for this symbol" });
-    }
-
-    // Check if refid already exists
-    const countRows = await conn.query(
-      'SELECT COUNT(*) as count FROM `receive.itradebook` WHERE refid = ?',
-      [refid]
-    );
-    
-    const count = Number(countRows[0].count);
-    if (count > 0) {
-      return res.status(400).json({ error: 'RefID already exists' });
-    }
-
-    // Insert new record
-    const result = await conn.query(
-      'INSERT INTO `receive.itradebook` (refid, buysize, buyprice, sellsize, sellprice, symbolref, type) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [refid, buysize || null, buyprice || null, sellsize || null, sellprice || null, symbolref || null, type || 'manual']
-    );
-
-    const responseData = convertBigIntToNumber({ 
-      success: true, 
-      message: 'Record inserted successfully',
-      id: Number(result.insertId)
-    });
-    
-    res.json(responseData);
-  } catch (err) {
-    console.error('Insert error:', err);
-    res.status(500).json({ error: 'Database error during insert' });
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-app.delete('/api/data', authenticateToken, async (req, res) => {
-  const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
-  
-  if (!ids.length) {
-    return res.status(400).json({ error: 'No IDs provided' });
-  }
-
-  let conn;
-  try {
-    conn = await pool.getConnection();
-    const allowed = await getAllowedSymbols(conn, req);
-    
-    // Build the delete query with symbol restrictions if needed
-    let query = `DELETE FROM \`receive.itradebook\` WHERE id IN (${ids.map(() => '?').join(',')})`;
-    let params = [...ids];
-    
-    if (allowed && allowed.length > 0) {
-      query += ` AND symbolref IN (${allowed.map(() => '?').join(',')})`;
-      params.push(...allowed);
-    }
-    
-    const result = await conn.query(query, params);
-    
-    const responseData = convertBigIntToNumber({ 
-      success: true, 
-      message: `${Number(result.affectedRows)} records deleted successfully`,
-      deletedCount: Number(result.affectedRows)
-    });
-    
-    res.json(responseData);
-  } catch (err) {
-    console.error('Delete error:', err);
-    res.status(500).json({ error: 'Database error during deletion' });
-  } finally {
-    if (conn) conn.release();
-  }
-});
+// Mount additional routes at /api for frontend compatibility
+app.get('/api/date-range', ...rawData._dateRange);
+app.get('/api/symbols', ...rawData._symbols);
+app.get('/api/trading-data', ...rawData._data);
+app.get('/api/live-data', ...rawData._data);  // Alias for /api/trading-data
+app.get('/api/live', ...rawData._live);  // Live data endpoint for real-time updates
+app.get('/api/data', ...report._data);  // Alias for reporting data
+app.get('/api/refids', ...report._refids);  // Get list of reference IDs
 
 // Health check
 app.get('/api/health', (req, res) => {

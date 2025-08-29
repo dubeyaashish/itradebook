@@ -1,18 +1,23 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { useAuth } from '../App';
+import { Link, useNavigate } from 'react-router-dom';
+import axios from 'axios';
+
+// Configure axios
+axios.defaults.baseURL = 'http://localhost:3001';
+axios.defaults.withCredentials = true;
 
 const RegisterPage = () => {
   const [formData, setFormData] = useState({
     username: '',
     email: '',
     password: '',
-    confirmPassword: ''
+    confirmPassword: '',
+    otp: ''
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  
-  const { register } = useAuth();
+  const [showOTPInput, setShowOTPInput] = useState(false);
+  const [registeredEmail, setRegisteredEmail] = useState('');
 
   const handleChange = (e) => {
     setFormData({
@@ -25,6 +30,40 @@ const RegisterPage = () => {
     e.preventDefault();
     setError('');
 
+    if (showOTPInput) {
+      // Handle OTP verification
+      try {
+        setLoading(true);
+        const response = await fetch('http://localhost:3001/api/auth/verify-otp', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            email: registeredEmail,
+            otp: formData.otp
+          }),
+          credentials: 'include'
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to verify OTP');
+        }
+
+        // Store token in localStorage
+        localStorage.setItem('token', data.token);
+        window.location.href = '/'; // Redirect to home page
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // Handle initial registration
     // Client-side validation
     if (formData.password !== formData.confirmPassword) {
       setError('Passwords do not match');
@@ -38,13 +77,63 @@ const RegisterPage = () => {
 
     setLoading(true);
 
-    const result = await register(formData.username, formData.email, formData.password);
-    
-    if (!result.success) {
-      setError(result.error);
+    try {
+      const response = await fetch('http://localhost:3001/api/auth/register', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          username: formData.username,
+          email: formData.email,
+          password: formData.password
+        }),
+        credentials: 'include'
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Registration failed');
+      }
+
+      if (data.requiresVerification) {
+        setShowOTPInput(true);
+        setRegisteredEmail(formData.email);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
     }
-    
-    setLoading(false);
+  };
+
+  const handleResendOTP = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch('http://localhost:3001/api/auth/resend-otp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: registeredEmail
+        }),
+        credentials: 'include'
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to resend OTP');
+      }
+
+      alert('New OTP has been sent to your email');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -114,13 +203,50 @@ const RegisterPage = () => {
             />
           </div>
 
-          <button 
-            type="submit" 
-            className="auth-button"
-            disabled={loading}
-          >
-            {loading ? 'Creating Account...' : 'Create Account'}
-          </button>
+          {showOTPInput ? (
+            <>
+              <div className="form-group">
+                <label htmlFor="otp">Enter OTP</label>
+                <input
+                  type="text"
+                  id="otp"
+                  name="otp"
+                  value={formData.otp}
+                  onChange={handleChange}
+                  required
+                  placeholder="Enter the 6-digit OTP from your email"
+                  maxLength="6"
+                  className="auth-input"
+                />
+                <p className="text-sm text-gray-600 mt-1">
+                  Didn't receive the OTP? 
+                  <button 
+                    type="button"
+                    onClick={handleResendOTP}
+                    className="text-blue-600 hover:text-blue-800 ml-1"
+                    disabled={loading}
+                  >
+                    Resend OTP
+                  </button>
+                </p>
+              </div>
+              <button 
+                type="submit" 
+                className="auth-button"
+                disabled={loading}
+              >
+                {loading ? 'Verifying...' : 'Verify OTP'}
+              </button>
+            </>
+          ) : (
+            <button 
+              type="submit" 
+              className="auth-button"
+              disabled={loading}
+            >
+              {loading ? 'Creating Account...' : 'Create Account'}
+            </button>
+          )}
         </form>
 
         <div className="auth-divider">

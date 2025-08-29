@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
+import Select from 'react-select';
 
 const RawDataPage = () => {
   const [data, setData] = useState([]);
@@ -7,6 +8,7 @@ const RawDataPage = () => {
   const [error, setError] = useState('');
   const [totalRecords, setTotalRecords] = useState(0);
   const [dateRange, setDateRange] = useState({ minDate: '', maxDate: '' });
+  const [symbols, setSymbols] = useState([]);
 
   // Filters
   const [filters, setFilters] = useState({
@@ -18,6 +20,7 @@ const RawDataPage = () => {
     order_dir: 'desc',
     page: 1,
     limit: 50,
+    symbol_ref: [], // Added for symbol filtering
   });
 
   // Column definitions (order controls both header & body)
@@ -55,12 +58,13 @@ const RawDataPage = () => {
     'difflot', 'profit_total', 'profit_ratio'
   ]);
 
-  // Load date range once
+  // Load date range and symbols once
   useEffect(() => {
-    const loadDateRange = async () => {
+    const loadInitialData = async () => {
       try {
-        const response = await axios.get('/api/date-range');
-        const { minDate, maxDate } = response.data || {};
+        // Load date range
+        const dateRangeResponse = await axios.get('/api/date-range');
+        const { minDate, maxDate } = dateRangeResponse.data || {};
         setDateRange({ minDate, maxDate });
 
         // If backend provides a range and current filters are blank, seed them
@@ -70,12 +74,16 @@ const RawDataPage = () => {
         if (!filters.end_date && maxDate) {
           setFilters(prev => ({ ...prev, end_date: maxDate }));
         }
+
+        // Load symbols
+        const symbolsResponse = await axios.get('/api/symbols');
+        setSymbols(symbolsResponse.data || []);
       } catch (err) {
-        console.error('Failed to load date range:', err);
+        console.error('Failed to load initial data:', err);
       }
     };
 
-    loadDateRange();
+    loadInitialData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -87,7 +95,9 @@ const RawDataPage = () => {
       try {
         const params = new URLSearchParams();
         Object.entries(filters).forEach(([key, value]) => {
-          if (value !== undefined && value !== null && value !== '') {
+          if (Array.isArray(value)) {
+            value.forEach(v => params.append(key, v));
+          } else if (value !== undefined && value !== null && value !== '') {
             params.append(key, value);
           }
         });
@@ -113,6 +123,11 @@ const RawDataPage = () => {
       [key]: value,
       page: key !== 'page' ? 1 : value,
     }));
+  };
+
+  // Handy handler for react-select multi selects
+  const onMultiChange = (key) => (selected) => {
+    handleFilterChange(key, (selected || []).map(o => o.value));
   };
 
   const handleSort = (column) => {
@@ -202,6 +217,90 @@ const RawDataPage = () => {
 
   const totalPages = Math.max(1, Math.ceil((totalRecords || 0) / (filters.limit || 1)));
 
+  // react-select styles
+  const selectStyles = {
+    menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+    control: (base, state) => ({
+      ...base,
+      minHeight: 42,
+      backgroundColor: 'var(--bg-input)',
+      borderColor: state.isFocused ? 'var(--accent-primary)' : 'var(--border-color)',
+      boxShadow: state.isFocused ? '0 0 0 3px rgb(59 130 246 / 0.10)' : 'none',
+      ':hover': { borderColor: 'var(--accent-primary)' },
+      color: 'var(--text-primary)',
+    }),
+    placeholder: (base) => ({
+      ...base,
+      color: 'var(--text-muted)',
+    }),
+    input: (base) => ({
+      ...base,
+      color: 'var(--text-primary)',
+    }),
+    singleValue: (base) => ({
+      ...base,
+      color: 'var(--text-primary)',
+    }),
+    valueContainer: (base) => ({
+      ...base,
+      padding: '2px 8px',
+      color: 'var(--text-primary)',
+    }),
+    multiValue: (base) => ({
+      ...base,
+      backgroundColor: 'rgba(59,130,246,.15)',
+      border: '1px solid var(--accent-primary)',
+    }),
+    multiValueLabel: (base) => ({
+      ...base,
+      color: 'var(--text-primary)',
+      fontWeight: 600,
+    }),
+    multiValueRemove: (base) => ({
+      ...base,
+      color: 'var(--text-secondary)',
+      ':hover': { backgroundColor: 'rgba(239,68,68,.25)', color: '#fff' },
+    }),
+    indicatorsContainer: (base) => ({ ...base, color: 'var(--text-secondary)' }),
+    dropdownIndicator: (base) => ({
+      ...base, color: 'var(--text-secondary)',
+      ':hover': { color: 'var(--text-primary)' },
+    }),
+    clearIndicator: (base) => ({
+      ...base, color: 'var(--text-secondary)',
+      ':hover': { color: 'var(--accent-error)' },
+    }),
+    menu: (base) => ({
+      ...base,
+      backgroundColor: 'var(--bg-card)',
+      border: '1px solid var(--border-color)',
+      boxShadow: 'var(--shadow-lg)',
+      color: 'var(--text-primary)',
+      overflow: 'hidden',
+    }),
+    menuList: (base) => ({
+      ...base,
+      backgroundColor: 'var(--bg-card)',
+      padding: 4,
+    }),
+    option: (base, state) => ({
+      ...base,
+      backgroundColor: state.isSelected
+        ? 'rgba(59,130,246,.25)'
+        : state.isFocused
+        ? 'rgba(59,130,246,.12)'
+        : 'transparent',
+      color: 'var(--text-primary)',
+      ':active': { backgroundColor: 'rgba(59,130,246,.25)' },
+    }),
+  };
+
+  // Options for react-select
+  const symbolOptions = useMemo(
+    () => symbols.map(s => ({ value: s, label: s })),
+    [symbols]
+  );
+
   return (
     <div className="raw-data-page">
       {/* Header Info */}
@@ -267,6 +366,20 @@ const RawDataPage = () => {
                 type="time"
                 value={filters.end_time}
                 onChange={(e) => handleFilterChange('end_time', e.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label>Symbols</label>
+              <Select
+                isMulti
+                isClearable
+                options={symbolOptions}
+                value={symbolOptions.filter(o => filters.symbol_ref.includes(o.value))}
+                onChange={onMultiChange('symbol_ref')}
+                placeholder="Select symbols…"
+                classNamePrefix="rs"
+                styles={selectStyles}
+                menuPortalTarget={document.body}
               />
             </div>
             <div className="form-group">

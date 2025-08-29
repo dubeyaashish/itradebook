@@ -802,3 +802,242 @@ a:focus-visible {
 .table-wrapper::-webkit-scrollbar-thumb:hover {
   background: var(--border-light);
 }
+
+/* ===============================
+   CUSTOMER DATA & PL REPORT TABLE STYLES
+   =============================== */
+
+/* Common table styles */
+.pl-table-container, .trading-table-container {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+  margin-bottom: 1.5rem;
+}
+
+.pl-table-header, .trading-table-header {
+  background: var(--bg-tertiary);
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.pl-table, .trading-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.pl-table th, .trading-table th {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-weight: 600;
+  padding: 0.875rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg-secondary) !important;
+}
+
+.pl-table td, .trading-table td {
+  padding: 0.875rem 1rem;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  white-space: nowrap;
+}
+
+.pl-table tr:nth-child(even) td, .trading-table tr:nth-child(even) td {
+  background: var(--bg-tertiary);
+}
+
+.pl-table-wrapper, .trading-table-wrapper {
+  overflow-x: auto;
+  max-height: 600px;
+  overflow-y: auto;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: var(--border-color) var(--bg-secondary); /* Firefox */
+}
+
+/* Better horizontal scrolling indicators */
+.pl-table-wrapper::after,
+.trading-table-wrapper::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 15px;
+  background: linear-gradient(to right, transparent, var(--bg-secondary));
+  pointer-events: none;
+  opacity: 0.8;
+  z-index: 30;
+}
+
+/* Sticky columns for better navigation */
+.pl-table td.sticky-left, .trading-table td.sticky-left,
+.pl-table th.sticky-left, .trading-table th.sticky-left {
+  position: sticky;
+  z-index: 20;
+  padding-left: 1rem;
+  padding-right: 1rem;
+  border-right: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.pl-table tr:nth-child(even) td.sticky-left, .trading-table tr:nth-child(even) td.sticky-left {
+  background: var(--bg-tertiary);
+}
+
+/* Fix sticky header overlap with sticky columns */
+.pl-table th.sticky-left, .trading-table th.sticky-left {
+  z-index: 40;
+  background: var(--bg-secondary) !important;
+}
+
+/* Make header sticky and always on top */
+.pl-table thead, .trading-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: var(--bg-secondary);
+}
+
+/* Add shadow to sticky header */
+.pl-table thead::after, .trading-table thead::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+/* Column widths for better readability */
+.trading-table td, .trading-table th {
+  min-width: 120px; /* Minimum width for all columns */
+  padding: 0.75rem 1rem;
+}
+
+/* Specific column widths */
+.trading-table td:first-child, .trading-table th:first-child { /* Checkbox */
+  min-width: 50px;
+  width: 50px;
+}
+
+.trading-table td:nth-child(2), .trading-table th:nth-child(2) { /* Date */
+  min-width: 150px;
+  width: 150px;
+}
+
+.trading-table td:nth-child(3), .trading-table th:nth-child(3) { /* Sub User */
+  min-width: 150px;
+  width: 150px;
+}
+
+.trading-table td:nth-child(4), .trading-table th:nth-child(4) { /* Order Ref */
+  min-width: 150px;
+  width: 150px;
+}
+
+/* Direction and Type */
+.trading-table td:nth-child(5), .trading-table th:nth-child(5),
+.trading-table td:nth-child(6), .trading-table th:nth-child(6) {
+  min-width: 100px;
+  width: 100px;
+}
+
+/* Symbol and Currency */
+.trading-table td:nth-child(7), .trading-table th:nth-child(7),
+.trading-table td:nth-child(8), .trading-table th:nth-child(8) {
+  min-width: 120px;
+  width: 120px;
+}
+
+/* Numeric columns (Volume, Price, etc.) */
+.trading-table td:nth-child(n+9), .trading-table th:nth-child(n+9) {
+  min-width: 130px;
+  width: 130px;
+  text-align: right;
+}
+
+/* Add hover effect */
+.trading-table tr:hover td {
+  background: var(--bg-tertiary) !important;
+  transition: background-color 0.15s ease-in-out;
+}
+.pl-table-container {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+  margin-bottom: 1.5rem;
+}
+
+.pl-table-header {
+  background: var(--bg-tertiary);
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.pl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.pl-table th {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-weight: 600;
+  padding: 0.875rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.pl-table td {
+  padding: 0.875rem 1rem;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+}
+
+.pl-table tr:nth-child(even) td {
+  background: var(--bg-tertiary);
+}
+
+.pl-table-wrapper {
+  overflow-x: auto;
+  max-height: 600px;
+  overflow-y: auto;
+  background: var(--bg-secondary);
+}
+
+.pl-table th.bg-blue-50,
+.pl-table td.bg-blue-50 {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.pl-table th.bg-yellow-50,
+.pl-table td.bg-yellow-50 {
+  background: rgba(234, 179, 8, 0.1);
+}
+
+.pl-table td.sticky-left {
+  position: sticky;
+  background: var(--bg-secondary);
+  z-index: 20;
+}
+
+.pl-table tr:nth-child(even) td.sticky-left {
+  background: var(--bg-tertiary);
+}

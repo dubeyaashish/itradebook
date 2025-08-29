@@ -1,0 +1,99 @@
+const express = require('express');
+
+module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
+    const router = express.Router();
+    // Get comments for a symbol
+    router.get('/:symbol_ref', authenticateToken, async (req, res) => {
+        const { symbol_ref } = req.params;
+        
+        if (!symbol_ref) {
+            return res.json([]);
+        }
+
+        let conn;
+        try {
+            conn = await pool.getConnection();
+            const allowed = await getAllowedSymbols(conn, req);
+            
+            if (allowed && !allowed.includes(symbol_ref)) {
+                return res.json([]);
+            }
+
+            const comments = await conn.query(
+                'SELECT id, symbol_ref, comment, user_id, username, created_at FROM trading_comments WHERE symbol_ref = ? ORDER BY created_at DESC',
+                [symbol_ref]
+            );
+
+            res.json(comments);
+        } catch (err) {
+            console.error('Get comments error:', err);
+            res.status(500).json([]);
+        } finally {
+            if (conn) conn.release();
+        }
+    });
+
+    // Add a comment
+    router.post('/', authenticateToken, async (req, res) => {
+        const { symbol_ref, comment } = req.body;
+        
+        if (!symbol_ref || !comment?.trim()) {
+            return res.status(400).json({ success: false, message: 'Missing data' });
+        }
+
+        let conn;
+        try {
+            conn = await pool.getConnection();
+            const allowed = await getAllowedSymbols(conn, req);
+            
+            if (allowed && !allowed.includes(symbol_ref)) {
+                return res.status(403).json({ success: false, message: 'Access denied to this symbol' });
+            }
+
+            await conn.query(
+                'INSERT INTO trading_comments (symbol_ref, comment, user_id, username) VALUES (?, ?, ?, ?)',
+                [symbol_ref, comment.trim(), req.user.id, req.user.username]
+            );
+
+            res.json({ success: true });
+        } catch (err) {
+            console.error('Add comment error:', err);
+            res.status(500).json({ success: false, message: 'Server error occurred' });
+        } finally {
+            if (conn) conn.release();
+        }
+    });
+
+    // Delete a comment
+    router.delete('/:id', authenticateToken, async (req, res) => {
+        const { id } = req.params;
+        
+        if (!id) {
+            return res.status(400).json({ success: false, message: 'Missing id' });
+        }
+
+        let conn;
+        try {
+            conn = await pool.getConnection();
+            
+            // Admin can delete any comment, users can only delete their own
+            const query = req.user.user_type === 'admin' 
+                ? 'DELETE FROM trading_comments WHERE id = ?'
+                : 'DELETE FROM trading_comments WHERE id = ? AND user_id = ?';
+            
+            const params = req.user.user_type === 'admin' 
+                ? [id]
+                : [id, req.user.id];
+
+            await conn.query(query, params);
+            res.json({ success: true });
+        } catch (err) {
+            console.error('Delete comment error:', err);
+            res.status(500).json({ success: false, message: 'Server error occurred' });
+        } finally {
+            if (conn) conn.release();
+        }
+    });
+
+    return { router };
+};

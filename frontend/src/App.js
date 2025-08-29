@@ -1,5 +1,5 @@
 import React, { useState, useEffect, createContext, useContext } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import Cookies from 'js-cookie';
 
@@ -19,8 +19,51 @@ import PLReportPage from './pages/PLReportPage';
 
 import './App.css';
 
+// Configure axios defaults
+axios.defaults.baseURL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+axios.defaults.withCredentials = true;
+
+// Create axios instance with interceptors
+const axiosInstance = axios.create();
+
+// Add a request interceptor to add token to all requests
+axiosInstance.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem(STORAGE_KEYS.TOKEN);
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Add a response interceptor to handle token expiration
+axiosInstance.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem(STORAGE_KEYS.TOKEN);
+      localStorage.removeItem(STORAGE_KEYS.USER);
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
+
+// Export the axios instance for use in other components
+export { axiosInstance };
+
 // Create Auth Context
 const AuthContext = createContext();
+
+// Local Storage Keys
+export const STORAGE_KEYS = {
+  TOKEN: 'auth_token',
+  USER: 'user'
+};
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -30,33 +73,83 @@ export const useAuth = () => {
   return context;
 };
 
-// Configure axios defaults
-axios.defaults.baseURL = 'http://localhost:3001';
-axios.defaults.withCredentials = true;
-
 // Auth Provider Component
 const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState(() => {
+    const savedUser = localStorage.getItem(STORAGE_KEYS.USER);
+    const token = localStorage.getItem(STORAGE_KEYS.TOKEN);
+    if (savedUser && token) {
+      // Set default authorization header if we have a token
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      return JSON.parse(savedUser);
+    }
+    return null;
+  });
   const [loading, setLoading] = useState(true);
 
-  // Set up axios interceptor to include token in requests
+  // Set up axios interceptor to include token in requests and handle token refresh
   useEffect(() => {
-    const token = Cookies.get('auth_token');
+    const token = localStorage.getItem(STORAGE_KEYS.TOKEN);
+    
+    // Request interceptor for adding token
+    const requestInterceptor = axios.interceptors.request.use(
+      config => {
+        const currentToken = localStorage.getItem(STORAGE_KEYS.TOKEN);
+        if (currentToken) {
+          config.headers.Authorization = `Bearer ${currentToken}`;
+        }
+        return config;
+      },
+      error => {
+        return Promise.reject(error);
+      }
+    );
+
+    // Response interceptor for handling auth errors
+    const responseInterceptor = axios.interceptors.response.use(
+      response => response,
+      async error => {
+        if (error.response?.status === 401 || error.response?.status === 403) {
+          // Clear auth state on authentication error
+          localStorage.removeItem(STORAGE_KEYS.TOKEN);
+          localStorage.removeItem(STORAGE_KEYS.USER);
+          setUser(null);
+        }
+        return Promise.reject(error);
+      }
+    );
+
     if (token) {
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       verifyToken();
     } else {
       setLoading(false);
     }
+
+    // Cleanup interceptors on unmount
+    return () => {
+      axios.interceptors.request.eject(requestInterceptor);
+      axios.interceptors.response.eject(responseInterceptor);
+    };
   }, []);
 
   const verifyToken = async () => {
     try {
-      const response = await axios.get('/api/auth/profile');
-      setUser(response.data.user);
+      const response = await axios.get('/api/auth/profile', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem(STORAGE_KEYS.TOKEN)}`
+        }
+      });
+      const userData = response.data.user;
+      
+      // Update stored user data
+      localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(userData));
+      setUser(userData);
     } catch (error) {
       console.error('Token verification failed:', error);
-      logout();
+      // Clear auth state
+      localStorage.removeItem(STORAGE_KEYS.TOKEN);
+      localStorage.removeItem(STORAGE_KEYS.USER);
+      setUser(null);
     } finally {
       setLoading(false);
     }
@@ -70,16 +163,19 @@ const AuthProvider = ({ children }) => {
       });
 
       const { token, user } = response.data;
+      console.log('Login response:', { token, user });
       
-      // Store token in cookie (expires in 24 hours)
-      Cookies.set('auth_token', token, { expires: 1 });
+      // Store token and user data in localStorage with consistent keys
+      localStorage.setItem(STORAGE_KEYS.TOKEN, token);
+      localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(user));
       
       // Set default authorization header
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       
       setUser(user);
-      return { success: true };
+      return { success: true, user };
     } catch (error) {
+      console.error('Login error:', error);
       return {
         success: false,
         error: error.response?.data?.error || 'Login failed'
@@ -119,8 +215,9 @@ const AuthProvider = ({ children }) => {
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
-      // Clear token and user data
-      Cookies.remove('auth_token');
+      // Clear localStorage and user data
+      localStorage.removeItem(STORAGE_KEYS.TOKEN);
+      localStorage.removeItem(STORAGE_KEYS.USER);
       delete axios.defaults.headers.common['Authorization'];
       setUser(null);
     }
@@ -131,6 +228,7 @@ const AuthProvider = ({ children }) => {
     login,
     register,
     logout,
+    verifyToken,
     isAuthenticated: !!user
   };
 
@@ -152,10 +250,59 @@ const AuthProvider = ({ children }) => {
   );
 };
 
-// Protected Route Component
+// Protected Route Component with authentication check
+const ProtectedRouteContent = ({ children }) => {
+  const { user, isAuthenticated } = useAuth();
+  const location = useLocation();
+
+  useEffect(() => {
+    const token = localStorage.getItem(STORAGE_KEYS.TOKEN);
+    if (!token) {
+      console.log('No token found in protected route');
+      window.location.href = '/login';
+      return;
+    }
+    
+    // Verify token is valid by checking if it's expired
+    try {
+      const tokenData = JSON.parse(atob(token.split('.')[1]));
+      if (tokenData.exp * 1000 < Date.now()) {
+        console.log('Token expired');
+        localStorage.removeItem(STORAGE_KEYS.TOKEN);
+        localStorage.removeItem(STORAGE_KEYS.USER);
+        window.location.href = '/login';
+      }
+    } catch (error) {
+      console.error('Token validation error:', error);
+      localStorage.removeItem(STORAGE_KEYS.TOKEN);
+      localStorage.removeItem(STORAGE_KEYS.USER);
+      window.location.href = '/login';
+    }
+  }, []);
+
+  if (!isAuthenticated) {
+    // Redirect to login while preserving the attempted URL
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
+  return <Layout>{children}</Layout>;
+};
+
+// Wrapper component that handles token verification
 const ProtectedRoute = ({ children }) => {
-  const { isAuthenticated } = useAuth();
-  return isAuthenticated ? <Layout>{children}</Layout> : <Navigate to="/login" replace />;
+  const { user } = useAuth();
+  const auth = useAuth();
+  const location = useLocation();
+
+  useEffect(() => {
+    // Verify token on route change for protected routes
+    const token = localStorage.getItem(STORAGE_KEYS.TOKEN);
+    if (token && !user) {
+      auth.verifyToken();
+    }
+  }, [location.pathname, user, auth]);
+
+  return <ProtectedRouteContent>{children}</ProtectedRouteContent>;
 };
 
 // Public Route Component (redirects to dashboard if authenticated)

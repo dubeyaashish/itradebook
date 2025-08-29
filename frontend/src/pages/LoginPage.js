@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../App';
 
 const LoginPage = () => {
+  const navigate = useNavigate();
   const [formData, setFormData] = useState({
     username: '',
     password: ''
@@ -24,13 +25,41 @@ const LoginPage = () => {
     setError('');
     setLoading(true);
 
-    const result = await login(formData.username, formData.password);
-    
-    if (!result.success) {
-      setError(result.error);
+    try {
+      console.log('Attempting login with:', formData.username);
+      const result = await login(formData.username, formData.password);
+
+      if (!result.success) {
+        throw new Error(result.error || 'Login failed');
+      }
+
+      console.log('Login successful');
+
+      // Redirect based on user type
+      let redirectPath = '/';
+      const userData = JSON.parse(localStorage.getItem('user'));
+      
+      switch(userData.userType) {
+        case 'admin':
+          redirectPath = '/raw-data';  // Admin users see raw data by default
+          break;
+        case 'managed':
+          redirectPath = '/daily-saved-data';  // Managed users see daily saved data
+          break;
+        case 'regular':
+          redirectPath = '/';  // Regular users see the main report page
+          break;
+        default:
+          redirectPath = '/';
+      }
+
+      // Use React Router's navigate function for redirection
+      navigate(redirectPath, { replace: true });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
     }
-    
-    setLoading(false);
   };
 
   return (
