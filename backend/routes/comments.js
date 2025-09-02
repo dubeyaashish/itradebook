@@ -65,10 +65,36 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
     });
 
     // Delete a comment
-    router.delete('/:id', authenticateToken, async (req, res) => {
+    router.delete('/:id', async (req, res) => {
+        console.log('🔍 Delete comment - BEFORE auth middleware:', {
+            id: req.params.id,
+            authHeader: req.headers.authorization ? 'Token present' : 'No token',
+            url: req.url,
+            method: req.method
+        });
+        
+        // Call authenticateToken manually to see where it fails
+        try {
+            await new Promise((resolve, reject) => {
+                authenticateToken(req, res, (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
+            });
+        } catch (authError) {
+            console.log('❌ Authentication failed:', authError);
+            return res.status(403).json({ success: false, message: 'Authentication failed', error: authError.message });
+        }
+        
         const { id } = req.params;
         
+        console.log('🔍 Delete comment - AFTER auth middleware:', {
+            id,
+            user: req.user ? { id: req.user.id, username: req.user.username, type: req.user.user_type } : 'NO USER'
+        });
+        
         if (!id) {
+            console.log('❌ Missing comment ID');
             return res.status(400).json({ success: false, message: 'Missing id' });
         }
 
@@ -76,19 +102,27 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
         try {
             conn = await pool.getConnection();
             
-            // Admin can delete any comment, users can only delete their own
-            const query = req.user.user_type === 'admin' 
-                ? 'DELETE FROM trading_comments WHERE id = ?'
-                : 'DELETE FROM trading_comments WHERE id = ? AND user_id = ?';
+            // First, check if the comment exists
+            const commentCheck = await conn.query(
+                'SELECT id, user_id, username FROM trading_comments WHERE id = ?',
+                [id]
+            );
             
-            const params = req.user.user_type === 'admin' 
-                ? [id]
-                : [id, req.user.id];
-
-            await conn.query(query, params);
+            console.log('🔍 Comment check result:', commentCheck);
+            
+            if (commentCheck.length === 0) {
+                console.log('❌ Comment not found in database');
+                return res.status(404).json({ success: false, message: 'Comment not found' });
+            }
+            
+            // Allow all authenticated users to delete any comment
+            const result = await conn.query('DELETE FROM trading_comments WHERE id = ?', [id]);
+            
+            console.log('✅ Delete result:', { affectedRows: result.affectedRows });
+            
             res.json({ success: true });
         } catch (err) {
-            console.error('Delete comment error:', err);
+            console.error('❌ Delete comment error:', err);
             res.status(500).json({ success: false, message: 'Server error occurred' });
         } finally {
             if (conn) conn.release();

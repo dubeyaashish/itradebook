@@ -289,19 +289,18 @@ module.exports = function(pool, authenticateToken, bcrypt, jwt) {
                 }
                 
                 if (validPassword) {
-                    const token = jwt.sign(
-                        { 
-                            userId: user.id, 
-                            username: user.username, 
-                            email: user.email,
-                            userType: 'admin',
-                            isSuperAdmin: user.is_super_admin 
-                        },
-                        process.env.JWT_SECRET || 'default-secret',
-                        { expiresIn: '24h' }
-                    );
-
-                    req.session.user_id = user.id;
+                const token = jwt.sign(
+                    { 
+                        userId: user.id, 
+                        username: user.username, 
+                        email: user.email,
+                        userType: 'admin',
+                        user_type: 'admin',  // Add this for consistency
+                        isSuperAdmin: user.is_super_admin 
+                    },
+                    process.env.JWT_SECRET || 'default-secret',
+                    { expiresIn: '24h' }
+                );                    req.session.user_id = user.id;
                     req.session.user_type = 'admin';
                     req.session.is_super_admin = user.is_super_admin;
 
@@ -313,6 +312,7 @@ module.exports = function(pool, authenticateToken, bcrypt, jwt) {
                             username: user.username,
                             email: user.email,
                             userType: 'admin',
+                            user_type: 'admin',  // Add this for frontend compatibility
                             isSuperAdmin: user.is_super_admin
                         }
                     });
@@ -391,6 +391,7 @@ module.exports = function(pool, authenticateToken, bcrypt, jwt) {
                             username: user.username, 
                             email: user.email,
                             userType: 'managed',
+                            user_type: 'managed',  // Add this for consistency
                             allowedSubUsers: allowedSubUsers
                         },
                         process.env.JWT_SECRET || 'default-secret',
@@ -407,7 +408,8 @@ module.exports = function(pool, authenticateToken, bcrypt, jwt) {
                             id: user.id,
                             username: user.username,
                             email: user.email,
-                            userType: 'managed'
+                            userType: 'managed',
+                            user_type: 'managed'  // Add this for frontend compatibility
                         }
                     });
                 }
@@ -477,6 +479,7 @@ module.exports = function(pool, authenticateToken, bcrypt, jwt) {
                             username: user.username, 
                             email: user.email,
                             userType: 'regular',
+                            user_type: 'regular',  // Add this for consistency
                             isVerified: user.Verified
                         },
                         process.env.JWT_SECRET || 'default-secret',
@@ -495,6 +498,7 @@ module.exports = function(pool, authenticateToken, bcrypt, jwt) {
                             username: user.username,
                             email: user.email,
                             userType: 'regular',
+                            user_type: 'regular',  // Add this for frontend compatibility
                             isVerified: user.Verified
                         }
                     };
@@ -531,7 +535,8 @@ module.exports = function(pool, authenticateToken, bcrypt, jwt) {
                 id: req.user.id,
                 username: req.user.username,
                 email: req.user.email,
-                user_type: req.user.user_type
+                user_type: req.user.user_type,
+                userType: req.user.user_type  // Add this for consistency
             }
         });
     });

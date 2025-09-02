@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import Select from 'react-select';
+import '../styles/modal.css';
+import { customSelectStyles } from '../components/SelectStyles';
+import ModernPagination from '../components/ModernPagination';
 
 // Configure axios
-axios.defaults.baseURL = 'http://localhost:3001';
-axios.defaults.withCredentials = true;
-
-// Axios configuration
-axios.defaults.baseURL = 'http://localhost:3001';
+axios.defaults.baseURL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 axios.defaults.withCredentials = true;
 
 const CustomerDataPage = () => {
@@ -17,18 +16,45 @@ const CustomerDataPage = () => {
     const [pagination, setPagination] = useState({});
     const [mt5Options, setMt5Options] = useState([]);
     const [orderRefOptions, setOrderRefOptions] = useState([]);
-    const [selectedRows, setSelectedRows] = useState([]);
+    const [symbolRefOptions, setSymbolRefOptions] = useState([]);
+    const [selectedRows, setSelectedRows] = useState(new Set());
+    const [showInsertModal, setShowInsertModal] = useState(false);
+    const [insertForm, setInsertForm] = useState({
+        mt5: '',
+        order_ref: '',
+        direction: '',
+        type: '',
+        volume: '',
+        price: '',
+        swap: '',
+        balance: '',
+        equity: '',
+        floating: '',
+        profit_loss: '',
+        symbolrate_name: '',
+        currency: '',
+        volume_total: ''
+    });
+    const [insertError, setInsertError] = useState('');
+    const [insertLoading, setInsertLoading] = useState(false);
 
     const [filters, setFilters] = useState({
         start_date: '',
         end_date: '',
         mt5: [],
         order_ref: [],
+        symbol_ref: [],
         filter_type: '',
         page: 1,
         order_by: 'id',
         order_dir: 'desc'
     });
+
+    // 2025 filter state (only for regular users)
+    const [show2025Only, setShow2025Only] = useState(false);
+    
+    // User context
+    const [user, setUser] = useState(null);
 
     // Format functions
     const formatNumber = (value, decimals = 2) => {
@@ -74,6 +100,11 @@ const CustomerDataPage = () => {
                 }
             });
 
+            // Add 2025 filter for regular users only
+            if (show2025Only && user?.user_type === 'regular') {
+                params.append('order_ref_starts_with', '2025');
+            }
+
             const response = await axios.get(`/api/customer-data?${params}`);
             if (response.data.success) {
                 setData(response.data.data);
@@ -86,6 +117,10 @@ const CustomerDataPage = () => {
                     value: opt.order_ref,
                     label: opt.order_ref
                 })));
+                setSymbolRefOptions(response.data.filters.symbolRefOptions.map(opt => ({
+                    value: opt.symbol_ref,
+                    label: opt.symbol_ref
+                })));
             } else {
                 setError('Failed to load data');
             }
@@ -97,8 +132,18 @@ const CustomerDataPage = () => {
     };
 
     useEffect(() => {
+        // Get user from localStorage
+        const userData = localStorage.getItem('user');
+        console.log('Raw user data from localStorage:', userData);
+        if (userData) {
+            const parsedUser = JSON.parse(userData);
+            console.log('Parsed user data:', parsedUser);
+            setUser(parsedUser);
+        } else {
+            console.log('No user data found in localStorage');
+        }
         loadData();
-    }, [filters]);
+    }, [filters, show2025Only]);
 
     const handleFilterChange = (key, value) => {
         setFilters(prev => ({
@@ -110,7 +155,11 @@ const CustomerDataPage = () => {
 
     const exportToCSV = async () => {
         try {
+            setLoading(true);
+            
             const params = new URLSearchParams();
+            
+            // Add current filters
             Object.entries(filters).forEach(([key, value]) => {
                 if (Array.isArray(value)) {
                     value.forEach(v => params.append(key, v));
@@ -119,87 +168,193 @@ const CustomerDataPage = () => {
                 }
             });
 
-            const response = await axios.get(`/api/customer-data/export?${params}`, {
+            // Add 2025 filter if active (only for regular users)
+            if (show2025Only && user?.user_type === 'regular') {
+                params.append('order_ref_starts_with', '2025');
+            }
+
+            const response = await axios.get(`/api/customer-data/export-csv?${params}`, {
                 responseType: 'blob'
             });
 
             const url = window.URL.createObjectURL(new Blob([response.data]));
             const link = document.createElement('a');
             link.href = url;
-            link.setAttribute('download', `trading-data-${new Date().toISOString().split('T')[0]}.csv`);
+            link.setAttribute('download', `customer-data-${new Date().toISOString().split('T')[0]}.csv`);
             document.body.appendChild(link);
             link.click();
             link.remove();
             window.URL.revokeObjectURL(url);
         } catch (error) {
+            console.error('CSV export error:', error);
             setError('Failed to export data');
+        } finally {
+            setLoading(false);
         }
     };
 
-    const handleBulkDelete = async () => {
-        if (!selectedRows.length) {
-            setError('No rows selected for deletion');
+    // Handle delete functionality - simple version
+    const handleBulkDelete = async (rowsToDelete) => {
+        console.log('handleBulkDelete called with:', rowsToDelete);
+        console.log('Current user:', user);
+        console.log('User type:', user?.user_type);
+        
+        if (!rowsToDelete || rowsToDelete.length === 0) {
+            alert('No rows selected for deletion');
             return;
         }
 
-        if (!window.confirm('Are you sure you want to delete the selected rows?')) {
+        if (!window.confirm(`Are you sure you want to delete ${rowsToDelete.length} record(s)?`)) {
             return;
         }
 
         try {
-            await axios.delete('/api/customer-data', {
-                data: { ids: selectedRows }
+            const ids = rowsToDelete.map(row => row.id).filter(id => id);
+            console.log('IDs to delete:', ids);
+            
+            if (ids.length === 0) {
+                alert('Selected rows do not have valid IDs');
+                return;
+            }
+
+            console.log('Making DELETE request to /api/customer-data with data:', { ids });
+
+            const response = await axios.delete('/api/customer-data', {
+                data: { ids }
             });
-            setSelectedRows([]);
-            loadData();
+
+            console.log('DELETE response:', response);
+
+            if (response.data.success) {
+                alert(`${response.data.affectedRows} record(s) deleted successfully`);
+                setSelectedRows(new Set()); // Clear selection
+                loadData(); // Refresh data
+            } else {
+                alert(response.data.message || 'Failed to delete data');
+            }
         } catch (error) {
-            setError(error.response?.data?.error || 'Failed to delete rows');
+            console.error('Error deleting data:', error);
+            console.error('Error response:', error.response);
+            alert(error.response?.data?.error || 'Failed to delete data');
         }
     };
 
+    // Handle row selection
+    const handleRowSelect = (row) => {
+        const newSelected = new Set(selectedRows);
+        if (newSelected.has(row.id)) {
+            newSelected.delete(row.id);
+        } else {
+            newSelected.add(row.id);
+        }
+        setSelectedRows(newSelected);
+    };
+
+    // Handle select all
+    const handleSelectAll = () => {
+        if (selectedRows.size === data.length) {
+            setSelectedRows(new Set());
+        } else {
+            setSelectedRows(new Set(data.map(row => row.id)));
+        }
+    };
+
+    // Handle insert functionality
+    const handleInsert = async (formData) => {
+        try {
+            await axios.post('/api/customer-data', formData);
+            loadData();
+            return { success: true };
+        } catch (error) {
+            return { 
+                success: false, 
+                error: error.response?.data?.error || 'Failed to insert record' 
+            };
+        }
+    };
+
+    const handleInsertSubmit = async (e) => {
+        e.preventDefault();
+        setInsertError('');
+        setInsertLoading(true);
+
+        // Validate required fields
+        if (!insertForm.mt5) {
+            setInsertError('MT5 ID is required');
+            setInsertLoading(false);
+            return;
+        }
+
+        const result = await handleInsert(insertForm);
+        
+        if (result.success) {
+            setShowInsertModal(false);
+            setInsertForm({
+                mt5: '',
+                order_ref: '',
+                direction: '',
+                type: '',
+                volume: '',
+                price: '',
+                swap: '',
+                balance: '',
+                equity: '',
+                floating: '',
+                profit_loss: '',
+                symbolrate_name: '',
+                currency: '',
+                volume_total: ''
+            });
+        } else {
+            setInsertError(result.error);
+        }
+        
+        setInsertLoading(false);
+    };
+
     return (
-        <div className="pl-report-page bg-gray-100 min-h-screen py-5 px-4 sm:px-6 lg:px-8">
+        <div className="pl-report-page bg-gray-100 min-h-screen py-2 sm:py-5 px-2 sm:px-4 lg:px-8">
             {/* Filters Section */}
-            <div className="pl-table-container mb-6 bg-white shadow rounded-lg">
-                <div className="pl-table-header border-b border-gray-200 bg-gray-50 px-6 py-4">
-                    <h2 className="text-lg font-semibold text-gray-900">Filters & Search</h2>
+            <div className="pl-table-container mb-4 sm:mb-6 bg-white shadow rounded-lg">
+                <div className="pl-table-header border-b border-gray-200 bg-gray-50 px-4 sm:px-6 py-3 sm:py-4">
+                    <h2 className="text-base sm:text-lg font-semibold text-gray-900">Filters & Search</h2>
                 </div>
                 
-                <div className="p-6">
-                    <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                <div className="p-4 sm:p-6">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
                         {/* Date Range Filters */}
                         <div className="form-group">
                             <label className="block text-sm font-medium text-gray-600 mb-1.5">Start Date</label>
-                            <div className="flex gap-2">
+                            <div className="flex flex-col sm:flex-row gap-2">
                                 <input
                                     type="date"
                                     value={filters.start_date}
                                     onChange={(e) => handleFilterChange('start_date', e.target.value)}
-                                    className="flex-1 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                    className="flex-1 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 min-h-[44px]"
                                 />
                                 <input
                                     type="time"
                                     value={filters.start_time}
                                     onChange={(e) => handleFilterChange('start_time', e.target.value)}
-                                    className="w-24 px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                    className="w-full sm:w-32 px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 min-h-[44px]"
                                 />
                             </div>
                         </div>
 
                         <div className="form-group">
                             <label className="block text-sm font-medium text-gray-600 mb-1.5">End Date</label>
-                            <div className="flex gap-2">
+                            <div className="flex flex-col sm:flex-row gap-2">
                                 <input
                                     type="date"
                                     value={filters.end_date}
                                     onChange={(e) => handleFilterChange('end_date', e.target.value)}
-                                    className="flex-1 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                    className="flex-1 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 min-h-[44px]"
                                 />
                                 <input
                                     type="time"
                                     value={filters.end_time}
                                     onChange={(e) => handleFilterChange('end_time', e.target.value)}
-                                    className="w-24 px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                    className="w-full sm:w-32 px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 min-h-[44px]"
                                 />
                             </div>
                         </div>
@@ -216,10 +371,12 @@ const CustomerDataPage = () => {
                                     selected ? selected.map(opt => opt.value) : []
                                 )}
                                 options={mt5Options}
-                                className="react-select-container"
-                                classNamePrefix="react-select"
+                                styles={customSelectStyles}
                                 placeholder="Select sub users..."
                                 noOptionsMessage={() => "No sub users available"}
+                                menuPortalTarget={document.body}
+                                menuPosition="fixed"
+                                menuPlacement="auto"
                             />
                         </div>
 
@@ -235,10 +392,33 @@ const CustomerDataPage = () => {
                                     selected ? selected.map(opt => opt.value) : []
                                 )}
                                 options={orderRefOptions}
-                                className="react-select-container"
-                                classNamePrefix="react-select"
+                                styles={customSelectStyles}
                                 placeholder="Select order references..."
                                 noOptionsMessage={() => "No order references available"}
+                                menuPortalTarget={document.body}
+                                menuPosition="fixed"
+                                menuPlacement="auto"
+                            />
+                        </div>
+
+                        {/* Symbol Reference Filter */}
+                        <div className="form-group">
+                            <label className="block text-sm font-medium text-gray-600 mb-1.5">Symbol Reference</label>
+                            <Select
+                                isMulti
+                                value={symbolRefOptions.filter(option => 
+                                    filters.symbol_ref.includes(option.value)
+                                )}
+                                onChange={(selected) => handleFilterChange('symbol_ref', 
+                                    selected ? selected.map(opt => opt.value) : []
+                                )}
+                                options={symbolRefOptions}
+                                styles={customSelectStyles}
+                                placeholder="Select symbol references..."
+                                noOptionsMessage={() => "No symbol references available"}
+                                menuPortalTarget={document.body}
+                                menuPosition="fixed"
+                                menuPlacement="auto"
                             />
                         </div>
 
@@ -258,11 +438,11 @@ const CustomerDataPage = () => {
                         {/* Sort Order */}
                         <div className="form-group">
                             <label className="block text-sm font-medium text-gray-600 mb-1.5">Sort By</label>
-                            <div className="flex gap-2">
+                            <div className="flex flex-col sm:flex-row gap-2">
                                 <select
                                     value={filters.order_by}
                                     onChange={(e) => handleFilterChange('order_by', e.target.value)}
-                                    className="flex-1 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                    className="flex-1 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 min-h-[44px]"
                                 >
                                     <option value="id">ID</option>
                                     <option value="datetime_server_ts_tz">Date</option>
@@ -275,7 +455,7 @@ const CustomerDataPage = () => {
                                 <select
                                     value={filters.order_dir}
                                     onChange={(e) => handleFilterChange('order_dir', e.target.value)}
-                                    className="w-24 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                    className="w-full sm:w-24 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 min-h-[44px]"
                                 >
                                     <option value="desc">DESC</option>
                                     <option value="asc">ASC</option>
@@ -287,17 +467,36 @@ const CustomerDataPage = () => {
                         <div className="form-group flex items-end gap-2">
                             <button
                                 onClick={loadData}
-                                className="flex-1 px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-700 text-white text-sm font-semibold rounded-md shadow-sm hover:from-indigo-700 hover:to-indigo-800 hover:shadow-md transform hover:-translate-y-0.5 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 active:translate-y-0 active:shadow-none flex items-center justify-center gap-2"
+                                className="auth-button flex-1 flex items-center justify-center gap-2"
                             >
-                                <i className="fas fa-filter text-lg" />
+                                <i className="fas fa-filter" />
                                 <span>Apply Filters</span>
                             </button>
                             <button
-                                onClick={() => handleFilterChange('page', 1)}
-                                className="px-4 py-2.5 bg-gray-100 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 transition-colors"
+                                onClick={() => setShowInsertModal(true)}
+                                className="auth-button flex-1 flex items-center justify-center gap-2"
                             >
-                                <i className="fas fa-sync-alt" />
+                                <i className="fas fa-plus" />
+                                <span>Insert Record</span>
                             </button>
+                            {user?.user_type === 'regular' && (
+                                <button 
+                                    onClick={() => setShow2025Only(!show2025Only)} 
+                                    className={`auth-button flex-1 flex items-center justify-center gap-2 ${show2025Only ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+                                >
+                                    <i className="fas fa-calendar-alt" />
+                                    <span>{show2025Only ? '✓ 2025 Orders Only' : 'Show 2025 Orders'}</span>
+                                </button>
+                            )}
+                            {selectedRows.size > 0 && (
+                                <button
+                                    onClick={() => handleBulkDelete(data.filter(row => selectedRows.has(row.id)))}
+                                    className="auth-button bg-red-600 hover:bg-red-700 flex-1 flex items-center justify-center gap-2"
+                                >
+                                    <i className="fas fa-trash" />
+                                    <span>Delete Selected ({selectedRows.size})</span>
+                                </button>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -335,37 +534,24 @@ const CustomerDataPage = () => {
                                     </span>
                                 </h2>
                             </div>
-                            <div className="flex flex-wrap items-center gap-3">
-                                <button
-                                    onClick={() => window.location.reload()}
-                                    className="px-4 py-2 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors flex items-center gap-2"
-                                >
-                                    <i className="fas fa-sync-alt"></i>
-                                    Refresh
-                                </button>
+                            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                                 <button
                                     onClick={exportToCSV}
-                                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors flex items-center gap-2"
+                                    className="auth-button-secondary"
                                 >
-                                    <i className="fas fa-file-export"></i>
+                                    <i className="fas fa-download mr-2"></i>
                                     Export CSV
                                 </button>
-                                {selectedRows.length > 0 && (
+                                {selectedRows.size > 0 && (
                                     <button
                                         onClick={handleBulkDelete}
-                                        className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors flex items-center gap-2"
+                                        className="px-3 sm:px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors flex items-center gap-1 sm:gap-2 text-sm min-h-[44px]"
                                     >
-                                        <i className="fas fa-trash"></i>
-                                        Delete Selected ({selectedRows.length})
+                                        <i className="fas fa-trash text-sm"></i>
+                                        <span className="hidden sm:inline">Delete Selected ({selectedRows.size})</span>
+                                        <span className="sm:hidden">({selectedRows.size})</span>
                                     </button>
                                 )}
-                                <button
-                                    onClick={() => window.open('/api/customer-data/debug', '_blank')}
-                                    className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors flex items-center gap-2"
-                                >
-                                    <i className="fas fa-bug"></i>
-                                    Debug
-                                </button>
                             </div>
                         </div>
                     </div>
@@ -378,14 +564,8 @@ const CustomerDataPage = () => {
                                         <div className="flex justify-center">
                                             <input
                                                 type="checkbox"
-                                                checked={selectedRows.length === data.length}
-                                                onChange={() => {
-                                                    if (selectedRows.length === data.length) {
-                                                        setSelectedRows([]);
-                                                    } else {
-                                                        setSelectedRows(data.map(row => row.id));
-                                                    }
-                                                }}
+                                                checked={data.length > 0 && selectedRows.size === data.length}
+                                                onChange={handleSelectAll}
                                                 className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                                             />
                                         </div>
@@ -498,14 +678,8 @@ const CustomerDataPage = () => {
                                         <td className="sticky-left left-0">
                                             <input
                                                 type="checkbox"
-                                                checked={selectedRows.includes(row.id)}
-                                                onChange={() => {
-                                                    if (selectedRows.includes(row.id)) {
-                                                        setSelectedRows(prev => prev.filter(id => id !== row.id));
-                                                    } else {
-                                                        setSelectedRows(prev => [...prev, row.id]);
-                                                    }
-                                                }}
+                                                checked={selectedRows.has(row.id)}
+                                                onChange={() => handleRowSelect(row)}
                                                 className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                                             />
                                         </td>
@@ -539,70 +713,16 @@ const CustomerDataPage = () => {
                         </table>
                     </div>
 
-                    {/* Pagination */}
-                    {pagination.total_pages > 1 && (
-                        <div className="border-t border-gray-200 px-6 py-4 flex items-center justify-between">
-                            <div className="flex-1 flex justify-between sm:hidden">
-                                <button
-                                    onClick={() => handleFilterChange('page', (pagination.page || 1) - 1)}
-                                    disabled={(pagination.page || 1) <= 1}
-                                    className="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
-                                >
-                                    Previous
-                                </button>
-                                <button
-                                    onClick={() => handleFilterChange('page', (pagination.page || 1) + 1)}
-                                    disabled={(pagination.page || 1) >= (pagination.totalPages || 1)}
-                                    className="ml-3 relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
-                                >
-                                    Next
-                                </button>
-                            </div>
-                            <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
-                                <div>
-                                    <p className="text-sm text-gray-700">
-                                        Showing page {pagination.page || 1} of {pagination.totalPages || 1}
-                                    </p>
-                                </div>
-                                <div>
-                                    <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px">
-                                        <button
-                                            onClick={() => handleFilterChange('page', 1)}
-                                            disabled={(pagination.page || 1) <= 1}
-                                            className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
-                                        >
-                                            <span className="sr-only">First</span>
-                                            <i className="fas fa-angle-double-left"></i>
-                                        </button>
-                                        <button
-                                            onClick={() => handleFilterChange('page', (pagination.page || 1) - 1)}
-                                            disabled={(pagination.page || 1) <= 1}
-                                            className="relative inline-flex items-center px-2 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
-                                        >
-                                            <span className="sr-only">Previous</span>
-                                            <i className="fas fa-angle-left"></i>
-                                        </button>
-                                        <button
-                                            onClick={() => handleFilterChange('page', (pagination.page || 1) + 1)}
-                                            disabled={(pagination.page || 1) >= (pagination.totalPages || 1)}
-                                            className="relative inline-flex items-center px-2 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
-                                        >
-                                            <span className="sr-only">Next</span>
-                                            <i className="fas fa-angle-right"></i>
-                                        </button>
-                                        <button
-                                            onClick={() => handleFilterChange('page', pagination.totalPages || 1)}
-                                            disabled={(pagination.page || 1) >= (pagination.totalPages || 1)}
-                                            className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
-                                        >
-                                            <span className="sr-only">Last</span>
-                                            <i className="fas fa-angle-double-right"></i>
-                                        </button>
-                                    </nav>
-                                </div>
-                            </div>
-                        </div>
-                    )}
+                    {/* Modern Pagination */}
+                    <ModernPagination
+                        currentPage={pagination.page || 1}
+                        totalPages={pagination.totalPages || 1}
+                        totalRecords={pagination.total || 0}
+                        recordsPerPage={pagination.limit || 50}
+                        onPageChange={(page) => handleFilterChange('page', page)}
+                        showRecordsInfo={true}
+                        showFirstLast={true}
+                    />
                 </div>
             )}
 
@@ -612,6 +732,199 @@ const CustomerDataPage = () => {
                     <i className="fas fa-inbox text-gray-400 text-4xl mb-4"></i>
                     <h3 className="text-lg font-medium text-gray-900 mb-1">No Data Found</h3>
                     <p className="text-gray-500">Try adjusting your search filters</p>
+                </div>
+            )}
+
+            {/* Insert Modal */}
+            {showInsertModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+                    <div className="auth-card max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+                        <div className="auth-header">
+                            <h2>Insert New Customer Data</h2>
+                            <button 
+                                onClick={() => setShowInsertModal(false)}
+                                className="absolute top-4 right-4 text-gray-400 hover:text-white"
+                            >
+                                ×
+                            </button>
+                        </div>
+
+                        {insertError && <div className="error-message">{insertError}</div>}
+
+                        <form onSubmit={handleInsertSubmit} className="auth-form">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="form-group">
+                                    <label>MT5 ID *</label>
+                                    <input
+                                        type="text"
+                                        value={insertForm.mt5}
+                                        onChange={(e) => setInsertForm({...insertForm, mt5: e.target.value})}
+                                        required
+                                        placeholder="Enter MT5 ID"
+                                    />
+                                </div>
+
+                                <div className="form-group">
+                                    <label>Order Reference</label>
+                                    <input
+                                        type="text"
+                                        value={insertForm.order_ref}
+                                        onChange={(e) => setInsertForm({...insertForm, order_ref: e.target.value})}
+                                        placeholder="Enter order reference"
+                                    />
+                                </div>
+
+                                <div className="form-group">
+                                    <label>Direction</label>
+                                    <select
+                                        value={insertForm.direction}
+                                        onChange={(e) => setInsertForm({...insertForm, direction: e.target.value})}
+                                    >
+                                        <option value="">Select Direction</option>
+                                        <option value="in">In</option>
+                                        <option value="out">Out</option>
+                                    </select>
+                                </div>
+
+                                <div className="form-group">
+                                    <label>Type</label>
+                                    <select
+                                        value={insertForm.type}
+                                        onChange={(e) => setInsertForm({...insertForm, type: e.target.value})}
+                                    >
+                                        <option value="">Select Type</option>
+                                        <option value="buy">Buy</option>
+                                        <option value="sell">Sell</option>
+                                    </select>
+                                </div>
+
+                                <div className="form-group">
+                                    <label>Volume</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        value={insertForm.volume}
+                                        onChange={(e) => setInsertForm({...insertForm, volume: e.target.value})}
+                                        placeholder="0.00"
+                                    />
+                                </div>
+
+                                <div className="form-group">
+                                    <label>Price</label>
+                                    <input
+                                        type="number"
+                                        step="0.00001"
+                                        value={insertForm.price}
+                                        onChange={(e) => setInsertForm({...insertForm, price: e.target.value})}
+                                        placeholder="0.00000"
+                                    />
+                                </div>
+
+                                <div className="form-group">
+                                    <label>Swap</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        value={insertForm.swap}
+                                        onChange={(e) => setInsertForm({...insertForm, swap: e.target.value})}
+                                        placeholder="0.00"
+                                    />
+                                </div>
+
+                                <div className="form-group">
+                                    <label>Balance</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        value={insertForm.balance}
+                                        onChange={(e) => setInsertForm({...insertForm, balance: e.target.value})}
+                                        placeholder="0.00"
+                                    />
+                                </div>
+
+                                <div className="form-group">
+                                    <label>Equity</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        value={insertForm.equity}
+                                        onChange={(e) => setInsertForm({...insertForm, equity: e.target.value})}
+                                        placeholder="0.00"
+                                    />
+                                </div>
+
+                                <div className="form-group">
+                                    <label>Floating</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        value={insertForm.floating}
+                                        onChange={(e) => setInsertForm({...insertForm, floating: e.target.value})}
+                                        placeholder="0.00"
+                                    />
+                                </div>
+
+                                <div className="form-group">
+                                    <label>Profit/Loss</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        value={insertForm.profit_loss}
+                                        onChange={(e) => setInsertForm({...insertForm, profit_loss: e.target.value})}
+                                        placeholder="0.00"
+                                    />
+                                </div>
+
+                                <div className="form-group">
+                                    <label>Symbol</label>
+                                    <input
+                                        type="text"
+                                        value={insertForm.symbolrate_name}
+                                        onChange={(e) => setInsertForm({...insertForm, symbolrate_name: e.target.value})}
+                                        placeholder="Enter symbol"
+                                    />
+                                </div>
+
+                                <div className="form-group">
+                                    <label>Currency</label>
+                                    <input
+                                        type="text"
+                                        value={insertForm.currency}
+                                        onChange={(e) => setInsertForm({...insertForm, currency: e.target.value})}
+                                        placeholder="Enter currency"
+                                    />
+                                </div>
+
+                                <div className="form-group">
+                                    <label>Volume Total</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        value={insertForm.volume_total}
+                                        onChange={(e) => setInsertForm({...insertForm, volume_total: e.target.value})}
+                                        placeholder="0.00"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="flex gap-3 mt-6">
+                                <button 
+                                    type="button" 
+                                    onClick={() => setShowInsertModal(false)}
+                                    className="auth-button-secondary flex-1"
+                                >
+                                    Cancel
+                                </button>
+                                <button 
+                                    type="submit" 
+                                    disabled={insertLoading}
+                                    className="auth-button flex-1"
+                                >
+                                    {insertLoading ? 'Inserting...' : 'Insert'}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
                 </div>
             )}
         </div>

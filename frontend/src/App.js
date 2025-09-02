@@ -2,6 +2,7 @@ import React, { useState, useEffect, createContext, useContext } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import Cookies from 'js-cookie';
+import { safeConsole, sanitizeForLog } from './utils/secureLogging';
 
 // Components
 import Layout from './components/Layout';
@@ -16,11 +17,16 @@ import DailySavedDataPage from './pages/DailySavedDataPage';
 import CustomerDataPage from './pages/CustomerDataPage';
 import RawDataPage from './pages/RawDataPage';
 import PLReportPage from './pages/PLReportPage';
+import GetSymbolsPage from './pages/GetSymbolsPage';
+import CustomerTradingPage from './pages/CustomerTradingPage';
+import GridsPage from './pages/GridsPage';
 
 import './App.css';
 
 // Configure axios defaults
-axios.defaults.baseURL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+const isProduction = process.env.NODE_ENV === 'production';
+const apiURL = isProduction ? 'https://web.itradebook.com' : 'http://localhost:3001';
+axios.defaults.baseURL = apiURL;
 axios.defaults.withCredentials = true;
 
 // Create axios instance with interceptors
@@ -145,8 +151,7 @@ const AuthProvider = ({ children }) => {
       localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(userData));
       setUser(userData);
     } catch (error) {
-      console.error('Token verification failed:', error);
-      // Clear auth state
+      // Clear auth state on verification failure
       localStorage.removeItem(STORAGE_KEYS.TOKEN);
       localStorage.removeItem(STORAGE_KEYS.USER);
       setUser(null);
@@ -163,7 +168,6 @@ const AuthProvider = ({ children }) => {
       });
 
       const { token, user } = response.data;
-      console.log('Login response:', { token, user });
       
       // Store token and user data in localStorage with consistent keys
       localStorage.setItem(STORAGE_KEYS.TOKEN, token);
@@ -175,7 +179,6 @@ const AuthProvider = ({ children }) => {
       setUser(user);
       return { success: true, user };
     } catch (error) {
-      console.error('Login error:', error);
       return {
         success: false,
         error: error.response?.data?.error || 'Login failed'
@@ -213,7 +216,7 @@ const AuthProvider = ({ children }) => {
     try {
       await axios.post('/api/auth/logout');
     } catch (error) {
-      console.error('Logout error:', error);
+      // Silent error handling for logout
     } finally {
       // Clear localStorage and user data
       localStorage.removeItem(STORAGE_KEYS.TOKEN);
@@ -258,7 +261,6 @@ const ProtectedRouteContent = ({ children }) => {
   useEffect(() => {
     const token = localStorage.getItem(STORAGE_KEYS.TOKEN);
     if (!token) {
-      console.log('No token found in protected route');
       window.location.href = '/login';
       return;
     }
@@ -267,13 +269,11 @@ const ProtectedRouteContent = ({ children }) => {
     try {
       const tokenData = JSON.parse(atob(token.split('.')[1]));
       if (tokenData.exp * 1000 < Date.now()) {
-        console.log('Token expired');
         localStorage.removeItem(STORAGE_KEYS.TOKEN);
         localStorage.removeItem(STORAGE_KEYS.USER);
         window.location.href = '/login';
       }
     } catch (error) {
-      console.error('Token validation error:', error);
       localStorage.removeItem(STORAGE_KEYS.TOKEN);
       localStorage.removeItem(STORAGE_KEYS.USER);
       window.location.href = '/login';
@@ -389,6 +389,30 @@ const App = () => {
             element={
               <ProtectedRoute>
                 <PLReportPage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/getsymbols" 
+            element={
+              <ProtectedRoute>
+                <GetSymbolsPage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/customertrading" 
+            element={
+              <ProtectedRoute>
+                <CustomerTradingPage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/grids" 
+            element={
+              <ProtectedRoute>
+                <GridsPage />
               </ProtectedRoute>
             } 
           />

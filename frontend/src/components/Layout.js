@@ -6,6 +6,7 @@ import './Layout.css';
 const Layout = ({ children }) => {
   const { user, logout } = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [apisOpen, setApisOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -55,6 +56,32 @@ const Layout = ({ children }) => {
       }
     ];
 
+    // APIS dropdown group
+    const apisGroup = {
+      label: 'APIS',
+      icon: 'fas fa-plug',
+      children: [
+        {
+          path: '/getsymbols',
+          label: 'GetSymbols',
+          icon: 'fas fa-chart-line',
+          description: 'Symbol Trading Data API'
+        },
+        {
+          path: '/customertrading',
+          label: 'Customer Trading',
+          icon: 'fas fa-users',
+          description: 'Customer Trading Data API'
+        },
+        {
+          path: '/grids',
+          label: 'Grids',
+          icon: 'fas fa-th',
+          description: 'Grid Order Data API'
+        }
+      ]
+    };
+
     if (user?.user_type === 'managed') {
       return [
         ...baseItems,
@@ -62,14 +89,15 @@ const Layout = ({ children }) => {
           path: '/customer-data',
           label: 'Exp. Data',
           icon: 'fas fa-user',
-          description: 'Customer Data Management'
+          description: 'Exp Data Management'
         },
         {
           path: '/daily-saved-data',
           label: 'Trading Cards',
           icon: 'fas fa-file-alt',
-          description: 'Live Dashboard Cards'
-        }
+          description: 'Live Cards'
+        },
+        apisGroup
       ];
     }
 
@@ -98,20 +126,21 @@ const Layout = ({ children }) => {
         path: '/customer-data',
         label: 'Exp. Data',
         icon: 'fas fa-user',
-        description: 'Customer Data Management'
-      }
+        description: 'Exp Data Management'
+      },
+      apisGroup
     ];
   };
 
   const navigationItems = getNavigationItems();
-  const currentItem = navigationItems.find(item => item.path === location.pathname);
+  const currentItem = navigationItems.find(item => item.path === location.pathname || (item.children && item.children.some(child => child.path === location.pathname)));
 
   return (
     <div className="app">
       {/* Sidebar */}
       <aside className={`sidebar ${isSidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-header">
-          <h1>iTradeBook</h1>
+          <h1>itradebook</h1>
           <span className="page-subtitle">{currentItem?.description}</span>
         </div>
 
@@ -127,14 +156,38 @@ const Layout = ({ children }) => {
 
         <nav className="nav-items">
           {navigationItems.map((item) => (
-            <button
-              key={item.path}
-              onClick={() => handleNavigation(item.path)}
-              className={`nav-item ${location.pathname === item.path ? 'active' : ''}`}
-            >
-              <i className={item.icon}></i>
-              <span>{item.label}</span>
-            </button>
+            item.children ? (
+              <div key={item.label} className="nav-group">
+                <button className="nav-item nav-group-label" onClick={() => setApisOpen(v => !v)}>
+                  <i className={item.icon}></i>
+                  <span>{item.label}</span>
+                  <i className={`fas fa-caret-${apisOpen ? 'up' : 'down'}`} style={{ marginLeft: 8 }}></i>
+                </button>
+                {apisOpen && (
+                  <div className="nav-group-dropdown">
+                    {item.children.map((child) => (
+                      <button
+                        key={child.path}
+                        onClick={() => handleNavigation(child.path)}
+                        className={`nav-item ${location.pathname === child.path ? 'active' : ''}`}
+                      >
+                        <i className={child.icon}></i>
+                        <span>{child.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button
+                key={item.path}
+                onClick={() => handleNavigation(item.path)}
+                className={`nav-item ${location.pathname === item.path ? 'active' : ''}`}
+              >
+                <i className={item.icon}></i>
+                <span>{item.label}</span>
+              </button>
+            )
           ))}
         </nav>
 
@@ -163,7 +216,7 @@ const Layout = ({ children }) => {
         <footer className="app-footer">
           <div className="footer-content">
             <p>
-              Copyright © 2025 iTradeBook.com. All rights reserved. 
+              Copyright © 2025 itradebook.com. All rights reserved. 
               No part of this website may be reproduced, distributed, or transmitted in any form without prior written permission.
             </p>
           </div>

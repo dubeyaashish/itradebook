@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth, axiosInstance, STORAGE_KEYS } from '../App';
+import { safeConsole } from '../utils/secureLogging';
 import TradingTable from '../components/TradingTable';
+import ModernPagination from '../components/ModernPagination';
 import axios from 'axios';
 import Select from 'react-select';
+import '../styles/modal.css';
 
 const ReportPage = () => {
   const { user, logout } = useAuth();
@@ -27,6 +30,9 @@ const ReportPage = () => {
     page: 1,
     limit: 30
   });
+
+  // 2025 filter state (only for regular users)
+  const [show2025Only, setShow2025Only] = useState(false);
 
   // react-select styles (keeps dropdown above modals/overflow)
 // put this where you define selectStyles
@@ -135,13 +141,12 @@ const selectStyles = {
   useEffect(() => {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters]);
+  }, [filters, show2025Only]);
 
   const loadSymbols = async () => {
     try {
       const token = localStorage.getItem(STORAGE_KEYS.TOKEN);
       if (!token) {
-        console.log('No token found in loadSymbols');
         window.location.href = '/login';
         return;
       }
@@ -149,7 +154,6 @@ const selectStyles = {
       setSymbols(response.data || []);
     } catch (error) {
       if (error.response?.status === 401) {
-        console.log('Token validation failed in loadSymbols');
         localStorage.removeItem(STORAGE_KEYS.TOKEN);
         localStorage.removeItem(STORAGE_KEYS.USER);
         window.location.href = '/login';
@@ -163,7 +167,6 @@ const selectStyles = {
     try {
       const token = localStorage.getItem(STORAGE_KEYS.TOKEN);
       if (!token) {
-        console.log('No token found in loadRefids');
         window.location.href = '/login';
         return;
       }
@@ -171,7 +174,6 @@ const selectStyles = {
       setRefids(response.data || []);
     } catch (error) {
       if (error.response?.status === 401) {
-        console.log('Token validation failed in loadRefids');
         localStorage.removeItem(STORAGE_KEYS.TOKEN);
         localStorage.removeItem(STORAGE_KEYS.USER);
         window.location.href = '/login';
@@ -195,16 +197,17 @@ const selectStyles = {
         }
       });
 
-      console.log('Authorization header:', axios.defaults.headers.common['Authorization']);
+      // Add 2025 filter for regular users only
+      if (show2025Only && user?.user_type === 'regular') {
+        params.append('refid_starts_with', '2025');
+      }
+
       const response = await axios.get(`/api/data?${params}`);
-      console.log('Data response:', response.data);
       
       setData(response.data?.rows || []);
       setTotalRecords(response.data?.total || 0);
     } catch (error) {
-      console.error('Load data error:', error.response || error);
       if (error.response?.status === 401) {
-        console.log('Token validation failed in loadData');
         // Clear auth state and redirect
         localStorage.removeItem(STORAGE_KEYS.TOKEN);
         localStorage.removeItem(STORAGE_KEYS.USER);
@@ -237,7 +240,11 @@ const selectStyles = {
     if (!window.confirm(`Are you sure you want to delete ${ids.length} records?`)) return;
 
     try {
-      await axios.delete('/api/data', { data: { ids } });
+      const token = localStorage.getItem('token');
+      await axios.delete('/api/data/', { 
+        headers: { Authorization: `Bearer ${token}` },
+        data: { ids } 
+      });
       loadData();
     } catch (error) {
       setError(error.response?.data?.error || 'Failed to delete records');
@@ -246,48 +253,83 @@ const selectStyles = {
 
   const handleInsert = async (formData) => {
     try {
-      await axios.post('/api/data', formData);
+      const token = localStorage.getItem('token');
+      
+      // Transform the data to match receive.itradebook table structure
+      const transformedData = {
+        refid: formData.refid || null,
+        buysize: parseFloat(formData.buysize) || 0,
+        buyprice: parseFloat(formData.buyprice) || 0,
+        sellsize: parseFloat(formData.sellsize) || 0,
+        sellprice: parseFloat(formData.sellprice) || 0,
+        symbolref: formData.symbolref,
+        type: formData.type
+      };
+
+      await axios.post('/api/data/', transformedData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
       loadData();
       return { success: true };
     } catch (error) {
+      console.error('Insert error:', error);
       return { 
         success: false, 
-        error: error.response?.data?.error || 'Failed to insert record' 
+        error: error.response?.data?.message || 'Failed to insert record' 
       };
     }
   };
 
-  const exportToCSV = () => {
-    if (!data.length) {
-      alert('No data to export');
-      return;
+  const exportToCSV = async () => {
+    try {
+      setLoading(true);
+      
+      // Build query parameters based on current filters
+      const params = new URLSearchParams();
+      
+      if (filters.start_date) params.append('start_date', filters.start_date);
+      if (filters.end_date) params.append('end_date', filters.end_date);
+      if (filters.start_time) params.append('start_time', filters.start_time);
+      if (filters.end_time) params.append('end_time', filters.end_time);
+      
+      // Add symbol filters
+      if (filters.symbolref && filters.symbolref.length > 0) {
+        filters.symbolref.forEach(symbol => params.append('symbolref', symbol));
+      }
+      
+      // Add refid filters
+      if (filters.refid && filters.refid.length > 0) {
+        filters.refid.forEach(refid => params.append('refid', refid));
+      }
+      
+      // Add 2025 filter if active (only for regular users)
+      if (show2025Only && user?.user_type === 'regular') {
+        params.append('refid_starts_with', '2025');
+      }
+
+      // Call the CSV export endpoint
+      const response = await axiosInstance.get(`/api/report/export-csv?${params.toString()}`, {
+        responseType: 'blob'
+      });
+
+      // Create download link
+      const blob = new Blob([response.data], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `report_data_${new Date().toISOString().split('T')[0]}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      
+    } catch (error) {
+      console.error('CSV export error:', error);
+      setError('Failed to export CSV. Please try again.');
+    } finally {
+      setLoading(false);
     }
-
-    const headers = ['ID', 'RefID', 'Symbol', 'Buy Size', 'Buy Price', 'Sell Size', 'Sell Price', 'Date', 'Type'];
-    const csvData = [headers];
-    
-    data.forEach(row => {
-      csvData.push([
-        row.id,
-        row.refid || '',
-        row.symbolref || '',
-        row.buysize || '',
-        row.buyprice || '',
-        row.sellsize || '',
-        row.sellprice || '',
-        row.date || '',
-        row.type || ''
-      ]);
-    });
-
-    const csvString = csvData.map(row => row.join(',')).join('\n');
-    const blob = new Blob([csvString], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `trading_data_${new Date().toISOString().split('T')[0]}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
   };
 
   const totalPages = Math.ceil(totalRecords / filters.limit);
@@ -382,19 +424,18 @@ const selectStyles = {
                 </select>
               </div>
 
-              {/* Records per page */}
-              <div className="form-group">
-                <label>Records per page</label>
-                <select
-                  value={filters.limit}
-                  onChange={(e) => handleFilterChange('limit', parseInt(e.target.value))}
-                >
-                  <option value={10}>10</option>
-                  <option value={30}>30</option>
-                  <option value={50}>50</option>
-                  <option value={100}>100</option>
-                </select>
-              </div>
+              {/* 2025 Filter for Regular Users */}
+              {user?.user_type === 'regular' && (
+                <div className="form-group">
+                  <label>Order Filter</label>
+                  <button 
+                    onClick={() => setShow2025Only(!show2025Only)} 
+                    className={`w-full auth-button ${show2025Only ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+                  >
+                    {show2025Only ? '✓ 2025 Orders Only' : 'Show 2025 Orders'}
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="mt-4 flex gap-3">
@@ -436,42 +477,16 @@ const selectStyles = {
           userType={user?.user_type}
         />
 
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="mt-6 flex justify-center items-center gap-2">
-            <button
-              onClick={() => handleFilterChange('page', 1)}
-              disabled={filters.page <= 1}
-              className="auth-button-secondary"
-            >
-              First
-            </button>
-            <button
-              onClick={() => handleFilterChange('page', filters.page - 1)}
-              disabled={filters.page <= 1}
-              className="auth-button-secondary"
-            >
-              Previous
-            </button>
-            <span className="px-4 py-2 bg-gray-800 rounded">
-              Page {filters.page} of {totalPages}
-            </span>
-            <button
-              onClick={() => handleFilterChange('page', filters.page + 1)}
-              disabled={filters.page >= totalPages}
-              className="auth-button-secondary"
-            >
-              Next
-            </button>
-            <button
-              onClick={() => handleFilterChange('page', totalPages)}
-              disabled={filters.page >= totalPages}
-              className="auth-button-secondary"
-            >
-              Last
-            </button>
-          </div>
-        )}
+        {/* Modern Pagination */}
+        <ModernPagination
+          currentPage={filters.page}
+          totalPages={totalPages}
+          totalRecords={totalRecords}
+          recordsPerPage={filters.limit}
+          onPageChange={(page) => handleFilterChange('page', page)}
+          showRecordsInfo={true}
+          showFirstLast={true}
+        />
       </main>
     </div>
   );

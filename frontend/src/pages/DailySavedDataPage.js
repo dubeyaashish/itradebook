@@ -1,17 +1,18 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import axios from 'axios';
+import io from 'socket.io-client';
 import {
   useQuery,
   useQueries,
   useQueryClient,
   useMutation,
 } from '@tanstack/react-query';
+import { useAuth } from '../App';
+import { safeConsole } from '../utils/secureLogging';
 
 // Constants
 const MAX_COMMENT_LEN = 200;
-const REFETCH_INTERVAL = 1000;
-const STALE_TIME = 500;
-const GC_TIME = 5 * 60 * 1000;
+const GC_TIME = 5 * 60 * 1000; // Garbage collection time
 
 // API functions
 const api = {
@@ -33,6 +34,20 @@ const api = {
     fetch: async () => {
       const res = await axios.get('/api/live');
       return res.data;
+    },
+  },
+  symbolNames: {
+    getAll: async () => {
+      const res = await axios.get('/api/symbol-names');
+      return res.data;
+    },
+    set: async ({ symbol_ref, custom_name }) => {
+      const res = await axios.post('/api/symbol-names', { symbol_ref, custom_name });
+      return res.data;
+    },
+    delete: async (symbolRef) => {
+      await axios.delete(`/api/symbol-names/${symbolRef}`);
+      return { symbol_ref: symbolRef };
     },
   },
 };
@@ -71,37 +86,28 @@ const getProfitClass = (value) => {
 const getInitials = (name) => (name?.[0] || 'U').toUpperCase();
 
 // Custom hooks
-const useAllSymbolComments = (symbolRefs) => {
+const useAllSymbolComments = (symbolRefs, userId) => {
   const safeRefs = Array.isArray(symbolRefs) ? symbolRefs : [];
   return useQueries({
     queries: safeRefs.map((symbolRef) => ({
-      queryKey: ['comments', symbolRef],
+      queryKey: ['comments', symbolRef, userId], // Include userId in cache key
       queryFn: () => api.comments.getAll(symbolRef),
-      enabled: Boolean(symbolRef),
+      enabled: Boolean(symbolRef) && Boolean(userId),
       staleTime: 30_000,
       gcTime: GC_TIME,
     })),
   });
 };
 
-const useLiveData = (autoRefresh) => {
+const useLiveData = (autoRefresh, userId) => {
   const [lastTimestamps, setLastTimestamps] = useState({});
   
   const fetchLiveData = useCallback(async () => {
     try {
       const newData = await api.liveData.fetch();
 
-      // Group data by symbol and get second latest entry
-      const dataBySymbol = newData.reduce((acc, item) => {
-        if (!acc[item.symbol_ref]) acc[item.symbol_ref] = [];
-        acc[item.symbol_ref].push(item);
-        return acc;
-      }, {});
-
-      const processedData = Object.entries(dataBySymbol).map(([symbol, items]) => {
-        items.sort((a, b) => b.timestamp - a.timestamp);
-        return items.length > 1 ? items[1] : items[0];
-      });
+      // Backend already returns second latest for each symbol, use directly
+      const processedData = newData;
 
       // Update timestamps for change detection
       const newTimestamps = processedData.reduce((acc, item) => {
@@ -114,25 +120,29 @@ const useLiveData = (autoRefresh) => {
           (symbol) => newTimestamps[symbol] !== prev[symbol]
         );
         if (changed.length > 0) {
-          console.log('Data updated for symbols:', changed);
+          safeConsole.log('Data updated for symbols:', changed);
         }
         return newTimestamps;
       });
 
       return processedData;
     } catch (error) {
-      console.error('Fetch error:', error);
+      // Silent error handling
       throw error;
     }
   }, []);
 
   const query = useQuery({
-    queryKey: ['liveData'],
+    queryKey: ['liveData', userId], // Include userId in cache key
     queryFn: fetchLiveData,
-    refetchInterval: autoRefresh ? REFETCH_INTERVAL : false,
-    staleTime: STALE_TIME,
+    // Hybrid approach: short polling as backup + WebSocket for instant updates
+    refetchInterval: autoRefresh ? 30000 : false, // 30 second backup polling
+    staleTime: 5000, // 5 seconds
     gcTime: GC_TIME,
     placeholderData: (prev) => prev,
+    enabled: !!userId, // Only fetch if user is logged in
+    refetchOnWindowFocus: false, // Don't refetch on window focus
+    refetchOnReconnect: true, // Do refetch when internet connection restored
     select: useCallback((data) => {
       return data?.map((item) => ({
         ...item,
@@ -143,6 +153,129 @@ const useLiveData = (autoRefresh) => {
 
   return query;
 };
+
+// Custom Symbol Name component
+const CustomSymbolName = React.memo(({ symbolRef, customName, onSave, onDelete, isEditing, setIsEditing }) => {
+  const [tempName, setTempName] = useState(customName || '');
+  const [isSaving, setIsSaving] = useState(false);
+  
+  const handleSave = async () => {
+    if (!tempName.trim()) {
+      setIsEditing(false);
+      return;
+    }
+    
+    setIsSaving(true);
+    try {
+      await onSave(symbolRef, tempName.trim());
+      setIsEditing(false);
+    } catch (error) {
+      // Silent error handling
+    } finally {
+      setIsSaving(false);
+    }
+  };
+  
+  const handleCancel = () => {
+    setTempName(customName || '');
+    setIsEditing(false);
+  };
+  
+  const handleDelete = async () => {
+    if (window.confirm('Remove custom name for this symbol?')) {
+      try {
+        await onDelete(symbolRef);
+      } catch (error) {
+        // Silent error handling
+      }
+    }
+  };
+  
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleSave();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      handleCancel();
+    }
+  };
+  
+  if (isEditing) {
+    return (
+      <div className="custom-name-editor">
+        <input
+          type="text"
+          value={tempName}
+          onChange={(e) => setTempName(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Enter custom name..."
+          maxLength={100}
+          autoFocus
+          disabled={isSaving}
+          className="custom-name-input"
+        />
+        <div className="custom-name-actions">
+          <button
+            onClick={handleSave}
+            disabled={isSaving || !tempName.trim()}
+            className="btn-save"
+            title="Save"
+          >
+            <i className="fas fa-check" />
+          </button>
+          <button
+            onClick={handleCancel}
+            disabled={isSaving}
+            className="btn-cancel"
+            title="Cancel"
+          >
+            <i className="fas fa-times" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+  
+  return (
+    <div className="custom-name-display">
+      {customName ? (
+        <>
+          <span className="custom-name-text" title={customName}>
+            {customName}
+          </span>
+          <div className="custom-name-controls">
+            <button
+              onClick={() => setIsEditing(true)}
+              className="btn-edit"
+              title="Edit custom name"
+            >
+              <i className="fas fa-edit" />
+            </button>
+            <button
+              onClick={handleDelete}
+              className="btn-delete"
+              title="Remove custom name"
+            >
+              <i className="fas fa-trash-alt" />
+            </button>
+          </div>
+        </>
+      ) : (
+        <button
+          onClick={() => setIsEditing(true)}
+          className="btn-add-name"
+          title="Add custom name"
+        >
+          <i className="fas fa-plus" />
+          <span>Add Name</span>
+        </button>
+      )}
+    </div>
+  );
+});
+
+CustomSymbolName.displayName = 'CustomSymbolName';
 
 // Comments component
 const Comments = React.memo(({ symbolRef, comments, onAddComment, onDeleteComment, isAddingComment, isDeletingComment }) => {
@@ -265,9 +398,21 @@ const Comments = React.memo(({ symbolRef, comments, onAddComment, onDeleteCommen
 Comments.displayName = 'Comments';
 
 // Trading card component
-const TradingCard = React.memo(({ item, comments, onAddComment, onDeleteComment, isAddingComment, isDeletingComment }) => {
+const TradingCard = React.memo(({ 
+  item, 
+  comments, 
+  onAddComment, 
+  onDeleteComment, 
+  isAddingComment, 
+  isDeletingComment,
+  customName,
+  onSaveCustomName,
+  onDeleteCustomName,
+  isSavingCustomName
+}) => {
   const profitRatio = Number(item.profit_ratio || 0);
   const isProfit = profitRatio >= 0;
+  const [isEditingName, setIsEditingName] = useState(false);
 
   return (
     <div 
@@ -284,8 +429,16 @@ const TradingCard = React.memo(({ item, comments, onAddComment, onDeleteComment,
             <div className={`symbol-icon ${isProfit ? 'profit' : 'loss'}`}>
               {item.symbol_ref ? item.symbol_ref.charAt(0) : '?'}
             </div>
-            <div>
+            <div className="symbol-info">
               <h3 className="symbol-name">{item.symbol_ref || 'Unknown'}</h3>
+              <CustomSymbolName
+                symbolRef={item.symbol_ref}
+                customName={customName}
+                onSave={onSaveCustomName}
+                onDelete={onDeleteCustomName}
+                isEditing={isEditingName}
+                setIsEditing={setIsEditingName}
+              />
               <p className="symbol-date">{formatDate(item.date)}</p>
             </div>
           </div>
@@ -451,9 +604,9 @@ const TradingCard = React.memo(({ item, comments, onAddComment, onDeleteComment,
 
       {/* Action Buttons */}
       <div className="action-buttons-container">
-        <button className="action-button" onClick={() => console.log('Action 1', item.symbol_ref)}>1</button>
-        <button className="action-button" onClick={() => console.log('Action 2', item.symbol_ref)}>2</button>
-        <button className="action-button" onClick={() => console.log('Action 3', item.symbol_ref)}>3</button>
+        <button className="action-button" onClick={() => {}}>1</button>
+        <button className="action-button" onClick={() => {}}>2</button>
+        <button className="action-button" onClick={() => {}}>3</button>
       </div>
     </div>
   );
@@ -464,12 +617,68 @@ TradingCard.displayName = 'TradingCard';
 // Main component
 const DailySavedDataPage = () => {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [errorMessage, setError] = useState('');
+  const [currentUserId, setCurrentUserId] = useState(user?.id);
 
-  // Data fetching
-  const { data, isLoading: loading, error } = useLiveData(autoRefresh);
+  // WebSocket for real-time invalidation (simple heartbeat approach)
+  useEffect(() => {
+    if (!user?.id) return;
+    
+    const apiURL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+    const socket = io(apiURL, {
+      withCredentials: true,
+      transports: ['websocket', 'polling'],
+      timeout: 5000,
+      forceNew: true
+    });
+    
+    socket.on('connect', () => {
+      console.log('🔌 WebSocket connected (change detection mode)');
+    });
+    
+    socket.on('connect_error', (error) => {
+      console.log('🔌 WebSocket connection error:', error);
+    });
+    
+    socket.on('disconnect', () => {
+      console.log('🔌 WebSocket disconnected');
+    });
+    
+    // Listen for actual data changes and refresh immediately
+    socket.on('data_changed', (data) => {
+      console.log('📡 Heartbeat received - refreshing data');
+      queryClient.invalidateQueries({ queryKey: ['liveData'] });
+      setLastUpdated(new Date());
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [user?.id, queryClient]);
+
+  // Clear cache when user changes (but preserve shared data when switching between regular users)
+  useEffect(() => {
+    if (user?.id !== currentUserId) {
+      // Clear all live data and comments as they are user-specific
+      queryClient.removeQueries({ queryKey: ['liveData'] });
+      queryClient.removeQueries({ queryKey: ['comments'] });
+      
+      // Only clear symbol names if switching between different user types
+      // (preserve shared names when switching between regular users)
+      const previousUserType = currentUserId ? 'unknown' : null; // We don't store previous user type, so clear to be safe
+      if (previousUserType !== user?.user_type) {
+        queryClient.removeQueries({ queryKey: ['symbolNames'] });
+      }
+      
+      setCurrentUserId(user?.id);
+    }
+  }, [user?.id, currentUserId, queryClient]);
+
+  // Data fetching with user-specific cache keys
+  const { data, isLoading: loading, error } = useLiveData(autoRefresh, user?.id);
 
   // Normalize live data to an array
   const list = useMemo(() => {
@@ -480,7 +689,7 @@ const DailySavedDataPage = () => {
 
   // Fetch comments for all symbols
   const symbolRefs = useMemo(() => list.map((item) => item.symbol_ref), [list]);
-  const commentsQueries = useAllSymbolComments(symbolRefs);
+  const commentsQueries = useAllSymbolComments(symbolRefs, user?.id);
 
   // Map: symbol_ref -> comments[]
   const commentsMap = useMemo(() => {
@@ -490,13 +699,23 @@ const DailySavedDataPage = () => {
     }, {});
   }, [symbolRefs, commentsQueries]);
 
+  // Fetch custom symbol names with user-type-based cache key
+  const { data: customNamesData = {} } = useQuery({
+    queryKey: ['symbolNames', user?.user_type === 'regular' ? 'shared' : user?.id], // Shared for regular users, user-specific for others
+    queryFn: api.symbolNames.getAll,
+    enabled: !!user?.id,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    gcTime: GC_TIME,
+  });
+
   // Comment mutations
   const addCommentMutation = useMutation({
     mutationFn: ({ symbolRef, text }) => 
       api.comments.create({ symbol_ref: symbolRef, comment: text }),
     onMutate: async ({ symbolRef, text }) => {
-      await queryClient.cancelQueries({ queryKey: ['comments', symbolRef] });
-      const previous = queryClient.getQueryData(['comments', symbolRef]) || [];
+      const queryKey = ['comments', symbolRef, user?.id];
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData(queryKey) || [];
       const optimistic = {
         id: 'temp-' + Date.now(),
         username: 'You',
@@ -504,42 +723,86 @@ const DailySavedDataPage = () => {
         created_at: new Date().toISOString(),
         _optimistic: true,
       };
-      queryClient.setQueryData(['comments', symbolRef], [...previous, optimistic]);
-      return { previous, symbolRef };
+      queryClient.setQueryData(queryKey, [...previous, optimistic]);
+      return { previous, symbolRef, queryKey };
     },
     onError: (_err, _vars, ctx) => {
-      if (ctx) queryClient.setQueryData(['comments', ctx.symbolRef], ctx.previous);
+      if (ctx) queryClient.setQueryData(ctx.queryKey, ctx.previous);
     },
     onSuccess: (newComment, vars) => {
-      const current = queryClient.getQueryData(['comments', vars.symbolRef]) || [];
+      const queryKey = ['comments', vars.symbolRef, user?.id];
+      const current = queryClient.getQueryData(queryKey) || [];
       if (newComment?.id) {
         const withoutTemp = current.filter((c) => !c._optimistic);
-        queryClient.setQueryData(['comments', vars.symbolRef], [...withoutTemp, newComment]);
+        queryClient.setQueryData(queryKey, [...withoutTemp, newComment]);
       } else {
-        queryClient.invalidateQueries({ queryKey: ['comments', vars.symbolRef] });
+        queryClient.invalidateQueries({ queryKey });
       }
     },
     onSettled: (_res, _err, vars) => {
-      queryClient.invalidateQueries({ queryKey: ['comments', vars.symbolRef] });
+      const queryKey = ['comments', vars.symbolRef, user?.id];
+      queryClient.invalidateQueries({ queryKey });
     },
   });
 
   const deleteCommentMutation = useMutation({
-    mutationFn: api.comments.delete,
+    mutationFn: ({ id }) => api.comments.delete(id),
     onMutate: async ({ id, symbolRef }) => {
-      await queryClient.cancelQueries({ queryKey: ['comments', symbolRef] });
-      const previous = queryClient.getQueryData(['comments', symbolRef]) || [];
+      const queryKey = ['comments', symbolRef, user?.id];
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData(queryKey) || [];
       queryClient.setQueryData(
-        ['comments', symbolRef],
+        queryKey,
         previous.filter((c) => c.id !== id)
       );
-      return { previous, symbolRef };
+      return { previous, symbolRef, queryKey };
     },
     onError: (_err, _vars, ctx) => {
-      if (ctx) queryClient.setQueryData(['comments', ctx.symbolRef], ctx.previous);
+      if (ctx) queryClient.setQueryData(ctx.queryKey, ctx.previous);
     },
     onSettled: (_res, _err, vars) => {
-      queryClient.invalidateQueries({ queryKey: ['comments', vars.symbolRef] });
+      const queryKey = ['comments', vars.symbolRef, user?.id];
+      queryClient.invalidateQueries({ queryKey });
+    },
+  });
+
+  // Custom name mutations
+  const saveCustomNameMutation = useMutation({
+    mutationFn: ({ symbol_ref, custom_name }) => 
+      api.symbolNames.set({ symbol_ref, custom_name }),
+    onMutate: async ({ symbol_ref, custom_name }) => {
+      const queryKey = ['symbolNames', user?.user_type === 'regular' ? 'shared' : user?.id];
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData(queryKey) || {};
+      queryClient.setQueryData(queryKey, { ...previous, [symbol_ref]: custom_name });
+      return { previous, queryKey };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx) queryClient.setQueryData(ctx.queryKey, ctx.previous);
+    },
+    onSettled: () => {
+      const queryKey = ['symbolNames', user?.user_type === 'regular' ? 'shared' : user?.id];
+      queryClient.invalidateQueries({ queryKey });
+    },
+  });
+
+  const deleteCustomNameMutation = useMutation({
+    mutationFn: (symbolRef) => api.symbolNames.delete(symbolRef),
+    onMutate: async (symbolRef) => {
+      const queryKey = ['symbolNames', user?.user_type === 'regular' ? 'shared' : user?.id];
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData(queryKey) || {};
+      const updated = { ...previous };
+      delete updated[symbolRef];
+      queryClient.setQueryData(queryKey, updated);
+      return { previous, queryKey };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx) queryClient.setQueryData(ctx.queryKey, ctx.previous);
+    },
+    onSettled: () => {
+      const queryKey = ['symbolNames', user?.user_type === 'regular' ? 'shared' : user?.id];
+      queryClient.invalidateQueries({ queryKey });
     },
   });
 
@@ -552,14 +815,22 @@ const DailySavedDataPage = () => {
     deleteCommentMutation.mutate(params);
   }, [deleteCommentMutation]);
 
+  const handleSaveCustomName = useCallback((symbolRef, customName) => {
+    saveCustomNameMutation.mutate({ symbol_ref: symbolRef, custom_name: customName });
+  }, [saveCustomNameMutation]);
+
+  const handleDeleteCustomName = useCallback((symbolRef) => {
+    deleteCustomNameMutation.mutate(symbolRef);
+  }, [deleteCustomNameMutation]);
+
   const refreshData = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ['liveData'] });
-  }, [queryClient]);
+    queryClient.invalidateQueries({ queryKey: ['liveData', user?.id] });
+  }, [queryClient, user?.id]);
 
   // Effects
   useEffect(() => {
     if (data) {
-      setLastUpdated(new Date());
+
       setError('');
     }
   }, [data]);
@@ -572,14 +843,14 @@ const DailySavedDataPage = () => {
 
   // Prefetch live data
   useEffect(() => {
-    if (list.length > 0) {
+    if (list.length > 0 && user?.id) {
       queryClient.prefetchQuery({
-        queryKey: ['liveData'],
+        queryKey: ['liveData', user.id],
         queryFn: api.liveData.fetch,
         staleTime: 2000,
       });
     }
-  }, [list, queryClient]);
+  }, [list, queryClient, user?.id]);
 
   // Dynamic styles - Improved CSS
   useEffect(() => {
@@ -680,6 +951,144 @@ const DailySavedDataPage = () => {
         font-weight: 600;
         margin-bottom: 0.25rem;
         color: #f8fafc;
+      }
+
+      .symbol-info {
+        flex: 1;
+        min-width: 0;
+      }
+
+      /* Custom Symbol Name Styles */
+      .custom-name-display {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin: 0.25rem 0;
+        min-height: 24px;
+      }
+
+      .custom-name-text {
+        color: #3b82f6;
+        font-size: 0.875rem;
+        font-weight: 500;
+        font-style: italic;
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .custom-name-controls {
+        display: flex;
+        gap: 0.25rem;
+        opacity: 0;
+        transition: opacity 0.2s;
+      }
+
+      .custom-name-display:hover .custom-name-controls {
+        opacity: 1;
+      }
+
+      .btn-edit, .btn-delete, .btn-save, .btn-cancel {
+        background: transparent;
+        border: none;
+        color: #94a3b8;
+        cursor: pointer;
+        padding: 0.25rem;
+        border-radius: 0.25rem;
+        transition: all 0.2s;
+        font-size: 0.75rem;
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .btn-edit:hover {
+        color: #3b82f6;
+        background: rgba(59, 130, 246, 0.1);
+      }
+
+      .btn-delete:hover {
+        color: #ef4444;
+        background: rgba(239, 68, 68, 0.1);
+      }
+
+      .btn-save {
+        color: #10b981;
+      }
+
+      .btn-save:hover {
+        background: rgba(16, 185, 129, 0.1);
+      }
+
+      .btn-save:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .btn-cancel:hover {
+        color: #f59e0b;
+        background: rgba(245, 158, 11, 0.1);
+      }
+
+      .btn-add-name {
+        background: rgba(59, 130, 246, 0.1);
+        border: 1px solid rgba(59, 130, 246, 0.2);
+        color: #3b82f6;
+        cursor: pointer;
+        padding: 0.375rem 0.75rem;
+        border-radius: 0.375rem;
+        transition: all 0.2s;
+        font-size: 0.75rem;
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+      }
+
+      .btn-add-name:hover {
+        background: rgba(59, 130, 246, 0.2);
+        border-color: rgba(59, 130, 246, 0.3);
+        transform: scale(1.02);
+      }
+
+      .custom-name-editor {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin: 0.25rem 0;
+      }
+
+      .custom-name-input {
+        background: rgba(30, 41, 59, 0.8);
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        border-radius: 0.375rem;
+        padding: 0.375rem 0.5rem;
+        color: #f8fafc;
+        font-size: 0.875rem;
+        width: 180px;
+        transition: all 0.2s;
+      }
+
+      .custom-name-input:focus {
+        outline: none;
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+      }
+
+      .custom-name-input::placeholder {
+        color: #64748b;
+      }
+
+      .custom-name-input:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .custom-name-actions {
+        display: flex;
+        gap: 0.25rem;
       }
 
       .symbol-date {
@@ -1050,24 +1459,32 @@ const DailySavedDataPage = () => {
       }
 
       .comment-delete {
-        background: transparent;
-        border: none;
+        background: rgba(148, 163, 184, 0.1);
+        border: 1px solid rgba(148, 163, 184, 0.2);
         color: #94a3b8;
         cursor: pointer;
-        padding: 0.25rem;
-        border-radius: 0.25rem;
+        padding: 0.5rem;
+        border-radius: 0.375rem;
         transition: all 0.2s;
         flex-shrink: 0;
+        min-width: 32px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
 
       .comment-delete:hover {
         color: #ef4444;
-        background: rgba(239, 68, 68, 0.1);
+        background: rgba(239, 68, 68, 0.15);
+        border-color: rgba(239, 68, 68, 0.3);
+        transform: scale(1.05);
       }
 
       .comment-delete:disabled {
         opacity: 0.5;
         cursor: not-allowed;
+        transform: none;
       }
 
       .show-all-btn {
@@ -1392,6 +1809,23 @@ const DailySavedDataPage = () => {
         </div>
       )}
 
+      {/* Header with Export Button */}
+      <div className="data-container mb-4">
+        <div className="p-4 flex justify-between items-center">
+          <div>
+            <h2 className="text-xl font-semibold">Today's Live Trading Data</h2>
+            <p className="text-sm text-gray-600 mt-1">
+              Showing data for {new Date().toLocaleDateString('en-US', { 
+                weekday: 'long', 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric' 
+              })}
+            </p>
+          </div>
+        </div>
+      </div>
+
       <div className="cards-grid">
         {list.length === 0 ? (
           <div className="no-data">
@@ -1415,6 +1849,10 @@ const DailySavedDataPage = () => {
               onDeleteComment={handleDeleteComment}
               isAddingComment={addCommentMutation.isLoading}
               isDeletingComment={deleteCommentMutation.isLoading}
+              customName={customNamesData[item.symbol_ref]}
+              onSaveCustomName={handleSaveCustomName}
+              onDeleteCustomName={handleDeleteCustomName}
+              isSavingCustomName={saveCustomNameMutation.isLoading}
             />
           ))
         )}

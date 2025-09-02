@@ -26,14 +26,11 @@ const LoginPage = () => {
     setLoading(true);
 
     try {
-      console.log('Attempting login with:', formData.username);
       const result = await login(formData.username, formData.password);
 
       if (!result.success) {
         throw new Error(result.error || 'Login failed');
       }
-
-      console.log('Login successful');
 
       // Redirect based on user type
       let redirectPath = '/';

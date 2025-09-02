@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import Select from 'react-select';
+import '../styles/modal.css';
+import ModernPagination from '../components/ModernPagination';
 
 const RawDataPage = () => {
   const [data, setData] = useState([]);
@@ -9,6 +11,23 @@ const RawDataPage = () => {
   const [totalRecords, setTotalRecords] = useState(0);
   const [dateRange, setDateRange] = useState({ minDate: '', maxDate: '' });
   const [symbols, setSymbols] = useState([]);
+  const [showInsertModal, setShowInsertModal] = useState(false);
+  const [selectedRows, setSelectedRows] = useState(new Set());
+  const [insertForm, setInsertForm] = useState({
+    symbol_ref: '',
+    buysize1: '',
+    buyprice1: '',
+    sellsize1: '',
+    sellprice1: '',
+    buysize2: '',
+    buyprice2: '',
+    sellsize2: '',
+    sellprice2: '',
+    mktprice: '',
+    type: 'manual'
+  });
+  const [insertError, setInsertError] = useState('');
+  const [insertLoading, setInsertLoading] = useState(false);
 
   // Filters
   const [filters, setFilters] = useState({
@@ -87,33 +106,34 @@ const RawDataPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Standalone loadData function that can be called from anywhere
+  const loadData = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const params = new URLSearchParams();
+      Object.entries(filters).forEach(([key, value]) => {
+        if (Array.isArray(value)) {
+          value.forEach(v => params.append(key, v));
+        } else if (value !== undefined && value !== null && value !== '') {
+          params.append(key, value);
+        }
+      });
+
+      const { data: resp } = await axios.get(`/api/trading-data?${params}`);
+      setData(resp.rows || []);
+      setTotalRecords(resp.total || 0);
+    } catch (err) {
+      setError(err?.response?.data?.error || 'Failed to load trading data');
+      setData([]);
+      setTotalRecords(0);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Load data whenever filters change
   useEffect(() => {
-    const loadData = async () => {
-      setLoading(true);
-      setError('');
-      try {
-        const params = new URLSearchParams();
-        Object.entries(filters).forEach(([key, value]) => {
-          if (Array.isArray(value)) {
-            value.forEach(v => params.append(key, v));
-          } else if (value !== undefined && value !== null && value !== '') {
-            params.append(key, value);
-          }
-        });
-
-        const { data: resp } = await axios.get(`/api/trading-data?${params}`);
-        setData(resp.rows || []);
-        setTotalRecords(resp.total || 0);
-      } catch (err) {
-        setError(err?.response?.data?.error || 'Failed to load trading data');
-        setData([]);
-        setTotalRecords(0);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     loadData();
   }, [filters]);
 
@@ -213,6 +233,114 @@ const RawDataPage = () => {
     link.download = `trading_data_${filters.start_date}_to_${filters.end_date}.csv`;
     link.click();
     URL.revokeObjectURL(url);
+  };
+
+  // Handle delete functionality
+  const handleBulkDelete = async (rowsToDelete) => {
+    if (!rowsToDelete || rowsToDelete.length === 0) {
+      alert('No rows selected for deletion');
+      return;
+    }
+
+    if (!window.confirm(`Are you sure you want to delete ${rowsToDelete.length} record(s)?`)) {
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      const ids = rowsToDelete.map(row => row.id).filter(id => id);
+      
+      if (ids.length === 0) {
+        alert('Selected rows do not have valid IDs');
+        return;
+      }
+
+      const response = await axios.delete('/api/raw-data', {
+        headers: { Authorization: `Bearer ${token}` },
+        data: { ids }
+      });
+
+      if (response.data.success) {
+        alert(`${response.data.affectedRows} record(s) deleted successfully`);
+        setSelectedRows(new Set()); // Clear selection
+        loadData(); // Refresh data
+      } else {
+        alert(response.data.message || 'Failed to delete data');
+      }
+    } catch (error) {
+      console.error('Error deleting data:', error);
+      alert(error.response?.data?.message || 'Failed to delete data');
+    }
+  };
+
+  // Handle row selection
+  const handleRowSelect = (row) => {
+    const newSelected = new Set(selectedRows);
+    if (newSelected.has(row.id)) {
+      newSelected.delete(row.id);
+    } else {
+      newSelected.add(row.id);
+    }
+    setSelectedRows(newSelected);
+  };
+
+  // Handle select all
+  const handleSelectAll = () => {
+    if (selectedRows.size === data.length) {
+      setSelectedRows(new Set());
+    } else {
+      setSelectedRows(new Set(data.map(row => row.id)));
+    }
+  };
+
+  // Handle insert functionality
+  const handleInsert = async (formData) => {
+    try {
+      await axios.post('/api/raw-data', formData);
+      loadData();
+      return { success: true };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error.response?.data?.error || 'Failed to insert record' 
+      };
+    }
+  };
+
+  const handleInsertSubmit = async (e) => {
+    e.preventDefault();
+    setInsertError('');
+    setInsertLoading(true);
+
+    // Validate required fields
+    if (!insertForm.symbol_ref) {
+      setInsertError('Symbol is required');
+      setInsertLoading(false);
+      return;
+    }
+
+    const result = await handleInsert(insertForm);
+    
+    if (result.success) {
+      setShowInsertModal(false);
+      setInsertForm({
+        symbol_ref: '',
+        buysize1: '',
+        buyprice1: '',
+        sellsize1: '',
+        sellprice1: '',
+        buysize2: '',
+        buyprice2: '',
+        sellsize2: '',
+        sellprice2: '',
+        mktprice: '',
+        type: 'manual'
+      });
+    } else {
+      setInsertError(result.error);
+    }
+    
+    setInsertLoading(false);
   };
 
   const totalPages = Math.max(1, Math.ceil((totalRecords || 0) / (filters.limit || 1)));
@@ -403,6 +531,17 @@ const RawDataPage = () => {
             <button onClick={() => setFilters(prev => ({ ...prev }))} className="auth-button-secondary">
               <i className="fas fa-sync mr-2"></i>Get Latest Data
             </button>
+            <button onClick={() => setShowInsertModal(true)} className="auth-button">
+              <i className="fas fa-plus mr-2"></i>Insert New Record
+            </button>
+            {selectedRows.size > 0 && (
+              <button 
+                onClick={() => handleBulkDelete(data.filter(row => selectedRows.has(row.id)))} 
+                className="auth-button bg-red-600 hover:bg-red-700"
+              >
+                <i className="fas fa-trash mr-2"></i>Delete Selected ({selectedRows.size})
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -448,6 +587,14 @@ const RawDataPage = () => {
             <table className="data-table">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-gray-800 text-white">
+                  <th className="w-12">
+                    <input
+                      type="checkbox"
+                      checked={data.length > 0 && selectedRows.size === data.length}
+                      onChange={handleSelectAll}
+                      className="rounded"
+                    />
+                  </th>
                   {columns.map((column) => (
                     <th
                       key={column.key}
@@ -465,6 +612,14 @@ const RawDataPage = () => {
               <tbody>
                 {data.map((row) => (
                   <tr key={row.id} className="hover:bg-gray-50">
+                    <td className="w-12">
+                      <input
+                        type="checkbox"
+                        checked={selectedRows.has(row.id)}
+                        onChange={() => handleRowSelect(row)}
+                        className="rounded"
+                      />
+                    </td>
                     {columns.map((col) => {
                       const val = row[col.key];
 
@@ -524,42 +679,16 @@ const RawDataPage = () => {
           </div>
         )}
 
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="mt-6 flex justify-center items-center gap-2">
-            <button
-              onClick={() => handleFilterChange('page', 1)}
-              disabled={filters.page <= 1}
-              className="auth-button-secondary"
-            >
-              <i className="fas fa-angle-double-left"></i>
-            </button>
-            <button
-              onClick={() => handleFilterChange('page', Math.max(1, filters.page - 1))}
-              disabled={filters.page <= 1}
-              className="auth-button-secondary"
-            >
-              <i className="fas fa-angle-left"></i>
-            </button>
-            <span className="px-4 py-2 bg-blue-600 text-white rounded">
-              Page {filters.page} of {totalPages}
-            </span>
-            <button
-              onClick={() => handleFilterChange('page', Math.min(totalPages, filters.page + 1))}
-              disabled={filters.page >= totalPages}
-              className="auth-button-secondary"
-            >
-              <i className="fas fa-angle-right"></i>
-            </button>
-            <button
-              onClick={() => handleFilterChange('page', totalPages)}
-              disabled={filters.page >= totalPages}
-              className="auth-button-secondary"
-            >
-              <i className="fas fa-angle-double-right"></i>
-            </button>
-          </div>
-        )}
+        {/* Modern Pagination */}
+        <ModernPagination
+          currentPage={filters.page}
+          totalPages={totalPages}
+          totalRecords={totalRecords}
+          recordsPerPage={filters.limit}
+          onPageChange={(page) => handleFilterChange('page', page)}
+          showRecordsInfo={true}
+          showFirstLast={true}
+        />
 
         {/* Summary Card */}
         {data.length > 0 && (
@@ -604,6 +733,175 @@ const RawDataPage = () => {
           </div>
         )}
       </div>
+
+      {/* Insert Modal */}
+      {showInsertModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="auth-card max-w-2xl w-full">
+            <div className="auth-header">
+              <h2>Insert New Raw Trading Data</h2>
+              <button 
+                onClick={() => setShowInsertModal(false)}
+                className="absolute top-4 right-4 text-gray-400 hover:text-white"
+              >
+                ×
+              </button>
+            </div>
+
+            {insertError && <div className="error-message">{insertError}</div>}
+
+            <form onSubmit={handleInsertSubmit} className="auth-form">
+              <div className="form-group">
+                <label>Symbol *</label>
+                <select
+                  value={insertForm.symbol_ref}
+                  onChange={(e) => setInsertForm({...insertForm, symbol_ref: e.target.value})}
+                  required
+                >
+                  <option value="">Select Symbol</option>
+                  {symbols.map(symbol => (
+                    <option key={symbol} value={symbol}>{symbol}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="form-group">
+                  <label>Market Price</label>
+                  <input
+                    type="number"
+                    step="0.00001"
+                    value={insertForm.mktprice}
+                    onChange={(e) => setInsertForm({...insertForm, mktprice: e.target.value})}
+                    placeholder="0.00000"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Type</label>
+                  <select
+                    value={insertForm.type}
+                    onChange={(e) => setInsertForm({...insertForm, type: e.target.value})}
+                  >
+                    <option value="manual">Manual</option>
+                    <option value="snapshot">Snapshot</option>
+                  </select>
+                </div>
+              </div>
+
+              <h4 className="text-sm font-medium text-gray-700 mb-3 mt-4">Level 1 Trading Data</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="form-group">
+                  <label>Buy Size 1</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={insertForm.buysize1}
+                    onChange={(e) => setInsertForm({...insertForm, buysize1: e.target.value})}
+                    placeholder="0.00"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Buy Price 1</label>
+                  <input
+                    type="number"
+                    step="0.00001"
+                    value={insertForm.buyprice1}
+                    onChange={(e) => setInsertForm({...insertForm, buyprice1: e.target.value})}
+                    placeholder="0.00000"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Sell Size 1</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={insertForm.sellsize1}
+                    onChange={(e) => setInsertForm({...insertForm, sellsize1: e.target.value})}
+                    placeholder="0.00"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Sell Price 1</label>
+                  <input
+                    type="number"
+                    step="0.00001"
+                    value={insertForm.sellprice1}
+                    onChange={(e) => setInsertForm({...insertForm, sellprice1: e.target.value})}
+                    placeholder="0.00000"
+                  />
+                </div>
+              </div>
+
+              <h4 className="text-sm font-medium text-gray-700 mb-3 mt-4">Level 2 Trading Data</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="form-group">
+                  <label>Buy Size 2</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={insertForm.buysize2}
+                    onChange={(e) => setInsertForm({...insertForm, buysize2: e.target.value})}
+                    placeholder="0.00"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Buy Price 2</label>
+                  <input
+                    type="number"
+                    step="0.00001"
+                    value={insertForm.buyprice2}
+                    onChange={(e) => setInsertForm({...insertForm, buyprice2: e.target.value})}
+                    placeholder="0.00000"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Sell Size 2</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={insertForm.sellsize2}
+                    onChange={(e) => setInsertForm({...insertForm, sellsize2: e.target.value})}
+                    placeholder="0.00"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Sell Price 2</label>
+                  <input
+                    type="number"
+                    step="0.00001"
+                    value={insertForm.sellprice2}
+                    onChange={(e) => setInsertForm({...insertForm, sellprice2: e.target.value})}
+                    placeholder="0.00000"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-6">
+                <button 
+                  type="button" 
+                  onClick={() => setShowInsertModal(false)}
+                  className="auth-button-secondary flex-1"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="submit" 
+                  disabled={insertLoading}
+                  className="auth-button flex-1"
+                >
+                  {insertLoading ? 'Inserting...' : 'Insert'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

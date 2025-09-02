@@ -196,7 +196,9 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
     async function liveDataHandler(req, res) {
         let conn;
         try {
+            // Add timeout for this endpoint
             conn = await pool.getConnection();
+            
             const allowed = await getAllowedSymbols(conn, req);
             
             if (Array.isArray(allowed) && allowed.length === 0) {
@@ -205,37 +207,46 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
 
             let params = [];
             let symbolFilterSql = '';
+            let dateFilterSql = '';
+
+            // Add today's date filter
+            const today = new Date().toISOString().split('T')[0]; // Get YYYY-MM-DD format
+            dateFilterSql = ' AND DATE(date) = ?';
+            params.push(today);
 
             if (allowed !== null && allowed.length > 0) {
-                symbolFilterSql = ` WHERE symbol_ref IN (${allowed.map(() => '?').join(',')})`;
-                params = allowed;
+                symbolFilterSql = ` AND symbol_ref IN (${allowed.map(() => '?').join(',')})`;
+                params.push(...allowed);
             }
 
-            // Optimized query to get latest data efficiently
+            // Query to get the second latest record for each symbol for today
             const query = `
-    WITH LatestIDs AS (
-        SELECT symbol_ref, 
-               MAX(id) as latest_id,
-               (
-                   SELECT id 
-                   FROM trading_data t2 
-                   WHERE t2.symbol_ref = t1.symbol_ref 
-                     AND t2.id < MAX(t1.id)
-                   ORDER BY id DESC 
-                   LIMIT 1
-               ) as prev_id
-        FROM trading_data t1
-        ${symbolFilterSql}
-        GROUP BY symbol_ref
-    )
-    SELECT t.*,
-           UNIX_TIMESTAMP(t.date) as timestamp
-    FROM trading_data t
-    INNER JOIN LatestIDs l ON t.id = COALESCE(l.prev_id, l.latest_id)
-    ORDER BY symbol_ref, timestamp DESC
+                SELECT t.*,
+                       UNIX_TIMESTAMP(t.date) as timestamp
+                FROM (
+                    SELECT *,
+                           ROW_NUMBER() OVER (PARTITION BY symbol_ref ORDER BY date DESC, id DESC) as row_num
+                    FROM trading_data
+                    WHERE DATE(date) = ?
+                    ${symbolFilterSql}
+                ) t
+                WHERE t.row_num = 2
+                   OR (t.row_num = 1 AND (
+                       SELECT COUNT(*) FROM trading_data td 
+                       WHERE td.symbol_ref = t.symbol_ref AND DATE(td.date) = ?
+                   ) = 1)
+                ORDER BY t.symbol_ref, t.date DESC
             `;
             
-            const rows = await conn.query(query, params);
+            // Adjust params for the query (need today date twice)
+            const queryParams = [today, ...params.slice(1), today];
+            
+            console.log('🔍 Starting live data query for user:', req.user?.username);
+            const startTime = Date.now();
+            const rows = await conn.query(query, queryParams);
+            const duration = Date.now() - startTime;
+            console.log(`✅ Live data query completed in ${duration}ms, returned ${rows.length} rows for today (${today})`);
+            
             res.json(rows);
         } catch (err) {
             console.error('Live data fetch error:', err);
@@ -245,121 +256,8 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
         }
     }
 
-    // Comments handlers
-    async function ensureCommentsTableExists(conn) {
-        try {
-            await conn.query(`
-                CREATE TABLE IF NOT EXISTS trading_comments (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    symbol_ref VARCHAR(64) NOT NULL,
-                    comment TEXT NOT NULL,
-                    user_id INT DEFAULT 0,
-                    username VARCHAR(50) DEFAULT '',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            `);
-        } catch (err) {
-            console.error('Comments table setup failed:', err);
-        }
-    }
-
-    // Add comment handler
-    async function addCommentHandler(req, res) {
-        let conn;
-        try {
-            conn = await pool.getConnection();
-            
-            const { symbol_ref, comment } = req.body;
-            if (!symbol_ref || !comment) {
-                return res.status(400).json({ success: false, message: 'Missing data' });
-            }
-
-            const allowed = await getAllowedSymbols(conn, req);
-            if (allowed !== null && !allowed.includes(symbol_ref)) {
-                return res.status(403).json({ success: false, message: 'Access denied to this symbol' });
-            }
-
-            await ensureCommentsTableExists(conn);
-
-            const user_id = req.user?.id || 0;
-            const username = req.user?.username || 'Unknown';
-
-            await conn.query(
-                'INSERT INTO trading_comments (symbol_ref, comment, user_id, username) VALUES (?, ?, ?, ?)',
-                [symbol_ref, comment, user_id, username]
-            );
-
-            res.json({ success: true });
-        } catch (err) {
-            console.error('Add comment error:', err);
-            res.status(500).json({ success: false, message: 'Server error occurred' });
-        } finally {
-            if (conn) conn.release();
-        }
-    }
-
-    // Delete comment handler
-    async function deleteCommentHandler(req, res) {
-        let conn;
-        try {
-            conn = await pool.getConnection();
-            
-            const { id } = req.body;
-            if (!id) {
-                return res.status(400).json({ success: false, message: 'Missing id' });
-            }
-
-            await ensureCommentsTableExists(conn);
-
-            const user_id = req.user?.id || 0;
-            const is_admin = req.user?.user_type === 'admin';
-
-            if (is_admin) {
-                await conn.query('DELETE FROM trading_comments WHERE id = ?', [id]);
-            } else {
-                await conn.query('DELETE FROM trading_comments WHERE id = ? AND user_id = ?', [id, user_id]);
-            }
-
-            res.json({ success: true });
-        } catch (err) {
-            console.error('Delete comment error:', err);
-            res.status(500).json({ success: false, message: 'Server error occurred' });
-        } finally {
-            if (conn) conn.release();
-        }
-    }
-
-    // Get comments handler
-    async function getCommentsHandler(req, res) {
-        let conn;
-        try {
-            conn = await pool.getConnection();
-            
-            const { symbol_ref } = req.query;
-            if (!symbol_ref) {
-                return res.json([]);
-            }
-
-            const allowed = await getAllowedSymbols(conn, req);
-            if (allowed !== null && !allowed.includes(symbol_ref)) {
-                return res.json([]);
-            }
-
-            await ensureCommentsTableExists(conn);
-
-            const comments = await conn.query(
-                'SELECT id, symbol_ref, comment, user_id, username, created_at FROM trading_comments WHERE symbol_ref = ? ORDER BY created_at DESC',
-                [symbol_ref]
-            );
-
-            res.json(comments);
-        } catch (err) {
-            console.error('Get comments error:', err);
-            res.status(500).json([]);
-        } finally {
-            if (conn) conn.release();
-        }
-    }
+    // Comment functionality has been moved to dedicated /routes/comments.js
+    // All comment operations are now handled by /api/comments endpoints
 
     // Mount handlers on router for /raw-data/* paths (backward compatibility)
     router.get('/date-range', authenticateToken, dateRangeHandler);
@@ -369,10 +267,199 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
     // Mount additional handlers
     router.get('/live', authenticateToken, liveDataHandler);
 
-    // Mount comments routes
-    router.post('/comments', authenticateToken, addCommentHandler);
-    router.delete('/comments', authenticateToken, deleteCommentHandler);
-    router.get('/comments', authenticateToken, getCommentsHandler);
+    // Insert trading data handler
+    async function insertTradingDataHandler(req, res) {
+        let conn;
+        try {
+            conn = await pool.getConnection();
+            
+            const {
+                symbol_ref, mktprice, buysize1, buyprice1, sellsize1, sellprice1,
+                buysize2, buyprice2, sellsize2, sellprice2, type, balance, equity, 
+                profit_and_loss, floating
+            } = req.body;
+            
+            if (!symbol_ref) {
+                return res.status(400).json({ success: false, message: 'Symbol is required' });
+            }
+
+            const allowed = await getAllowedSymbols(conn, req);
+            if (allowed !== null && !allowed.includes(symbol_ref)) {
+                return res.status(403).json({ success: false, message: 'Access denied to this symbol' });
+            }
+
+            const query = `
+                INSERT INTO trading_data (
+                    symbol_ref, mktprice, buysize1, buyprice1, sellsize1, sellprice1,
+                    buysize2, buyprice2, sellsize2, sellprice2, type, balance, equity,
+                    profit_and_loss, floating, date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+            `;
+
+            const params = [
+                symbol_ref,
+                parseFloat(mktprice) || 0,
+                parseFloat(buysize1) || 0,
+                parseFloat(buyprice1) || 0,
+                parseFloat(sellsize1) || 0,
+                parseFloat(sellprice1) || 0,
+                parseFloat(buysize2) || 0,
+                parseFloat(buyprice2) || 0,
+                parseFloat(sellsize2) || 0,
+                parseFloat(sellprice2) || 0,
+                type || null,
+                parseFloat(balance) || 0,
+                parseFloat(equity) || 0,
+                parseFloat(profit_and_loss) || 0,
+                parseFloat(floating) || 0
+            ];
+
+            const result = await conn.query(query, params);
+
+            res.json({
+                success: true,
+                message: 'Trading data inserted successfully',
+                id: result.insertId
+            });
+
+        } catch (err) {
+            console.error('Insert trading data error:', err);
+            res.status(500).json({ success: false, message: 'Server error occurred' });
+        } finally {
+            if (conn) conn.release();
+        }
+    }
+
+    // Delete trading data handler
+    async function deleteTradingDataHandler(req, res) {
+        let conn;
+        try {
+            conn = await pool.getConnection();
+            
+            const { ids } = req.body;
+            
+            if (!Array.isArray(ids) || ids.length === 0) {
+                return res.status(400).json({ success: false, message: 'No IDs provided' });
+            }
+
+            // Check permissions for each record
+            const allowed = await getAllowedSymbols(conn, req);
+            if (allowed !== null) {
+                const checkQuery = `SELECT id, symbol_ref FROM trading_data WHERE id IN (${ids.map(() => '?').join(',')})`;
+                const records = await conn.query(checkQuery, ids);
+                
+                for (const record of records) {
+                    if (!allowed.includes(record.symbol_ref)) {
+                        return res.status(403).json({ 
+                            success: false, 
+                            message: `Access denied to symbol ${record.symbol_ref}` 
+                        });
+                    }
+                }
+            }
+
+            const deleteQuery = `DELETE FROM trading_data WHERE id IN (${ids.map(() => '?').join(',')})`;
+            const result = await conn.query(deleteQuery, ids);
+
+            res.json({
+                success: true,
+                message: `${result.affectedRows} records deleted successfully`,
+                affectedRows: result.affectedRows
+            });
+
+        } catch (err) {
+            console.error('Delete trading data error:', err);
+            res.status(500).json({ success: false, message: 'Server error occurred' });
+        } finally {
+            if (conn) conn.release();
+        }
+    }
+
+    // CSV Export handler for Trading Data - exports all data based on filters (not paginated)
+    async function csvExportHandler(req, res) {
+        let conn;
+        try {
+            conn = await pool.getConnection();
+            const allowed = await getAllowedSymbols(conn, req);
+            
+            if (Array.isArray(allowed) && allowed.length === 0) {
+                return res.json([]);
+            }
+
+            let filter = ' WHERE 1=1';
+            let params = [];
+
+            // Date range filter
+            if (req.query.start_date && req.query.end_date) {
+                filter += ' AND date BETWEEN ? AND ?';
+                params.push(req.query.start_date, req.query.end_date);
+            }
+
+            // Symbol filter with permission check
+            if (req.query.symbols && req.query.symbols.length > 0) {
+                const symbols = Array.isArray(req.query.symbols) ? req.query.symbols : [req.query.symbols];
+                const allowedSymbols = allowed === null ? symbols : symbols.filter(s => allowed.includes(s));
+                
+                if (allowedSymbols.length > 0) {
+                    filter += ` AND symbol_ref IN (${allowedSymbols.map(() => '?').join(',')})`;
+                    params.push(...allowedSymbols);
+                } else if (allowed !== null) {
+                    return res.json([]);
+                }
+            } else if (allowed !== null && allowed.length > 0) {
+                filter += ` AND symbol_ref IN (${allowed.map(() => '?').join(',')})`;
+                params.push(...allowed);
+            }
+
+            const query = `
+                SELECT 
+                    symbol_ref, 
+                    DATE_FORMAT(date, '%Y-%m-%d %H:%i:%s') as date,
+                    type, price, volume, profit_loss, commission, swap
+                FROM trading_data
+                ${filter}
+                ORDER BY date DESC
+            `;
+            
+            const rows = await conn.query(query, params);
+
+            // Set CSV headers
+            res.setHeader('Content-Type', 'text/csv');
+            res.setHeader('Content-Disposition', 'attachment; filename="trading_data.csv"');
+
+            // Create CSV content
+            const headers = ['Symbol Ref', 'Date', 'Type', 'Price', 'Volume', 'Profit/Loss', 'Commission', 'Swap'];
+            let csvContent = headers.join(',') + '\n';
+
+            rows.forEach(row => {
+                const csvRow = [
+                    row.symbol_ref || '',
+                    row.date || '',
+                    row.type || '',
+                    row.price || 0,
+                    row.volume || 0,
+                    row.profit_loss || 0,
+                    row.commission || 0,
+                    row.swap || 0
+                ].map(field => `"${String(field).replace(/"/g, '""')}"`).join(',');
+                csvContent += csvRow + '\n';
+            });
+
+            res.send(csvContent);
+        } catch (err) {
+            console.error('Trading data CSV export error:', err);
+            res.status(500).json({ error: 'CSV export failed' });
+        } finally {
+            if (conn) conn.release();
+        }
+    }
+
+    // Comment routes removed - now handled by dedicated /api/comments endpoints
+    router.get('/export-csv', authenticateToken, csvExportHandler);
+    
+    // Mount trading data CRUD routes
+    router.post('/', authenticateToken, insertTradingDataHandler);
+    router.delete('/', authenticateToken, deleteTradingDataHandler);
 
     // Return both the router and individual handlers
     return {
@@ -383,6 +470,7 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
         _dateRange: [authenticateToken, dateRangeHandler],
         _data: [authenticateToken, dataHandler],
         _symbols: [authenticateToken, symbolsHandler],
-        _live: [authenticateToken, liveDataHandler]
+        _live: [authenticateToken, liveDataHandler],
+        _exportCSV: [authenticateToken, csvExportHandler]
     };
 };

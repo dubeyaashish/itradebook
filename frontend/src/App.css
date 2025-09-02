@@ -743,10 +743,88 @@ body {
   .form-group input,
   .form-group select {
     padding: 0.625rem 0.75rem;
+    min-height: 44px; /* Ensure touch targets are large enough */
   }
   
   .main-content {
     padding: 0.5rem;
+  }
+
+  /* Better table responsiveness */
+  .pl-table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .pl-table th,
+  .pl-table td {
+    white-space: nowrap;
+    min-width: 80px;
+  }
+
+  /* Mobile-friendly pagination */
+  .modern-pagination {
+    padding: 8px 12px;
+  }
+
+  /* Larger touch targets for mobile */
+  button, 
+  .auth-button,
+  .auth-button-secondary,
+  input[type="button"],
+  input[type="submit"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* Very small screens (iPhone SE, small Android phones) */
+@media (max-width: 375px) {
+  .main-content {
+    padding: 0.25rem;
+  }
+
+  .pl-table-container {
+    margin: 0.5rem 0;
+  }
+
+  .grid {
+    gap: 0.5rem;
+  }
+
+  .form-group {
+    margin-bottom: 0.75rem;
+  }
+
+  /* Stack form elements vertically */
+  .flex.gap-2 {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  /* Ensure readable font sizes */
+  .text-sm {
+    font-size: 0.875rem;
+  }
+
+  .text-lg {
+    font-size: 1.125rem;
+  }
+}
+
+/* Extra small screens */
+@media (max-width: 320px) {
+  .sidebar-header h1 {
+    font-size: 1.125rem;
+  }
+
+  .nav-item {
+    padding: 0.75rem 0.875rem;
+    font-size: 0.85rem;
+  }
+
+  .main-content {
+    padding: 0.125rem;
   }
 
   .data-table th,
@@ -824,7 +902,8 @@ a:focus-visible {
 
 .pl-table, .trading-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 0.875rem;
 }
 

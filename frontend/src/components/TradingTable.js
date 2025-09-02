@@ -86,8 +86,8 @@ const TradingTable = ({
     setInsertLoading(true);
 
     // Validate required fields
-    if (!insertForm.refid) {
-      setInsertError('RefID is required');
+    if (!insertForm.symbolref) {
+      setInsertError('Symbol is required');
       setInsertLoading(false);
       return;
     }
@@ -277,13 +277,12 @@ const TradingTable = ({
 
             <form onSubmit={handleInsertSubmit} className="auth-form">
               <div className="form-group">
-                <label>RefID (Ticket) *</label>
+                <label>RefID (Ticket)</label>
                 <input
                   type="text"
                   value={insertForm.refid}
                   onChange={(e) => setInsertForm({...insertForm, refid: e.target.value})}
-                  required
-                  placeholder="Enter unique RefID"
+                  placeholder="Enter RefID (optional)"
                 />
               </div>
 

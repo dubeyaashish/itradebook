@@ -3,8 +3,11 @@ import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 
 // Configure axios
-axios.defaults.baseURL = 'http://localhost:3001';
+axios.defaults.baseURL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 axios.defaults.withCredentials = true;
+
+// API base URL for fetch requests
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
 const RegisterPage = () => {
   const [formData, setFormData] = useState({
@@ -34,7 +37,7 @@ const RegisterPage = () => {
       // Handle OTP verification
       try {
         setLoading(true);
-        const response = await fetch('http://localhost:3001/api/auth/verify-otp', {
+        const response = await fetch(`${API_BASE_URL}/api/auth/verify-otp`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -78,7 +81,7 @@ const RegisterPage = () => {
     setLoading(true);
 
     try {
-      const response = await fetch('http://localhost:3001/api/auth/register', {
+      const response = await fetch(`${API_BASE_URL}/api/auth/register`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -111,7 +114,7 @@ const RegisterPage = () => {
   const handleResendOTP = async () => {
     try {
       setLoading(true);
-      const response = await fetch('http://localhost:3001/api/auth/resend-otp', {
+      const response = await fetch(`${API_BASE_URL}/api/auth/resend-otp`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
