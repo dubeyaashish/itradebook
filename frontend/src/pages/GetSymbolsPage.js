@@ -105,23 +105,32 @@ const GetSymbolsPage = () => {
     ? data.filter(item => selectedSymbols.some(symbol => symbol.value === item.symbolref))
     : data;
 
-  // Format number with proper decimals
-  const formatNumber = (num, decimals = 2) => {
-    if (num === null || num === undefined || isNaN(num)) return '0.00';
+  // Format number with original precision, limited to 4 decimal places
+  const formatNumber = (num) => {
+    if (num === null || num === undefined || num === '' || isNaN(num)) return '0';
+    
     const number = Number(num);
+    if (number === 0) return '0';
     
-    // For very small decimals, show more precision
-    if (Math.abs(number) < 1 && number !== 0) {
-      return number.toFixed(Math.max(4, decimals));
+    // Keep original precision, just add thousand separators for readability
+    let str = number.toString();
+    
+    // Limit to 4 decimal places if there are more
+    if (str.includes('.')) {
+      const parts = str.split('.');
+      if (parts[1].length > 4) {
+        str = number.toFixed(4);
+      }
     }
     
-    // For integers, don't show unnecessary decimals
-    if (Number.isInteger(number) && decimals <= 2) {
-      return number.toLocaleString();
+    // Only add formatting for numbers >= 1000 to avoid changing small decimals
+    if (Math.abs(number) >= 1000 && !str.includes('e')) {
+      const parts = str.split('.');
+      parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+      str = parts.join('.');
     }
     
-    // For regular decimals, preserve the precision
-    return number.toFixed(decimals);
+    return str;
   };
 
   // Get cell class for profit/loss styling
@@ -257,19 +266,19 @@ const GetSymbolsPage = () => {
                     </td>
                     <td className="text-right font-mono">
                       <span className="text-green-600 font-semibold">
-                        {formatNumber(row.total_buy_size, 0)}
+                        {formatNumber(row.total_buy_size)}
                       </span>
                     </td>
                     <td className="text-right font-mono">
                       <span className="text-red-600 font-semibold">
-                        {formatNumber(row.total_sell_size, 0)}
+                        {formatNumber(row.total_sell_size)}
                       </span>
                     </td>
                     <td className="text-right font-mono">
-                      {formatNumber(row.weighted_avg_buy_price, 4)}
+                      {formatNumber(row.weighted_avg_buy_price)}
                     </td>
                     <td className="text-right font-mono">
-                      {formatNumber(row.weighted_avg_sell_price, 4)}
+                      {formatNumber(row.weighted_avg_sell_price)}
                     </td>
                     <td className="font-mono">
                       {row.last_refid || 'N/A'}

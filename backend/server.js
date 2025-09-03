@@ -103,11 +103,11 @@ const pool = mariadb.createPool({
   user: process.env.DB_USER || 'itradebook_db',
   password: process.env.DB_PASS || 'v264^jx1W',
   database: process.env.DB_NAME || 'itradebook',
-  connectionLimit: 5,  // Reduced from 10 to 5 to stay within user limits
-  acquireTimeout: 30000,  // Increased timeout for getting connections
-  timeout: 30000,  // Increased query timeout
-  idleTimeout: 600000,  // 10 minutes idle timeout
-  minimumIdle: 1,  // Keep at least 1 idle connection
+  connectionLimit: 15,  // Increased from 5 to 15 for better performance
+  acquireTimeout: 60000,  // Increased timeout for getting connections (60 seconds)
+  timeout: 60000,  // Increased query timeout (60 seconds)
+  idleTimeout: 1800000,  // 30 minutes idle timeout (increased from 10 minutes)
+  minimumIdle: 3,  // Keep at least 3 idle connections (increased from 1)
   maxUses: 0,  // No limit on connection reuse
   reconnect: true,
   resetAfterUse: false,  // Don't reset session variables after each use
@@ -119,7 +119,7 @@ const pool = mariadb.createPool({
   arrayParenthesis: false,
   permitSetMultiParamEntries: true,
   // Connection monitoring
-  leakDetectionTimeout: 20000,  // Detect connection leaks after 20 seconds
+  leakDetectionTimeout: 30000,  // Detect connection leaks after 30 seconds (increased from 20)
 });
 
 // Helper function to convert BigInt values to Numbers recursively
@@ -153,8 +153,8 @@ function logPoolStats() {
   if (stats) {
     console.log('Pool Stats:', stats);
     
-    // Log warning if pool is getting full
-    if (stats.activeConnections >= 4) {
+    // Log warning if pool is getting full (80% capacity)
+    if (stats.activeConnections >= 12) {
       console.warn('⚠️  Pool nearly full! Active connections:', stats.activeConnections);
     }
   }
@@ -188,6 +188,7 @@ const transporter = nodemailer.createTransport({
 });
 
 // JWT Middleware
+// JWT Middleware - FIXED VERSION
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -216,10 +217,10 @@ const authenticateToken = async (req, res, next) => {
       );
     }
     
-    // If still not found, check account_details
+    // If still not found, check account_details (regular users)
     if (users.length === 0) {
       users = await conn.query(
-        'SELECT id, Name as username, Email as email, user_type, Verified as is_verified FROM account_details WHERE id = ?',
+        'SELECT id, Name as username, Email as email, COALESCE(user_type, "regular") as user_type, Verified as is_verified FROM account_details WHERE id = ?',
         [decoded.userId]
       );
     }
@@ -229,9 +230,29 @@ const authenticateToken = async (req, res, next) => {
     }
     
     const user = users[0];
-    req.user = user;
+    
+    // Normalize user object for consistent access across all routes
+    req.user = {
+      id: user.id,
+      userId: user.id, // Add both for compatibility
+      username: user.username,
+      email: user.email,
+      user_type: user.user_type || 'regular',
+      userType: user.user_type || 'regular', // Add both for compatibility
+      is_verified: user.is_verified
+    };
+    
+    // Also set session for legacy compatibility
+    req.session = req.session || {};
     req.session.user_id = user.id;
-    req.session.user_type = user.user_type;
+    req.session.user_type = user.user_type || 'regular';
+    
+    console.log('🔐 User authenticated:', {
+      id: req.user.id,
+      username: req.user.username,
+      type: req.user.user_type
+    });
+    
     next();
   } catch (err) {
     console.error('Token verification error:', err);
@@ -735,12 +756,12 @@ app.get('/api/health', (req, res) => {
 app.get('/api/pool-health', (req, res) => {
   try {
     const poolStats = logPoolStats();
-    const isHealthy = poolStats && poolStats.activeConnections < 4;
+    const isHealthy = poolStats && poolStats.activeConnections < 12;
     
     res.json({
       healthy: isHealthy,
       poolStats,
-      warnings: poolStats?.activeConnections >= 4 ? ['Pool nearly full'] : [],
+      warnings: poolStats?.activeConnections >= 12 ? ['Pool nearly full'] : [],
       timestamp: new Date().toISOString()
     });
   } catch (error) {

@@ -99,10 +99,10 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
           const agg = aggregateResult[0];
           
           // Sanitize and calculate
-          const totalBuySize = Math.max(0, parseFloat(agg.total_buy_size) || 0);
-          const totalSellSize = Math.max(0, parseFloat(agg.total_sell_size) || 0);
-          const weightedBuy = Math.max(0, parseFloat(agg.weighted_avg_buy_price) || 0);
-          const weightedSell = Math.max(0, parseFloat(agg.weighted_avg_sell_price) || 0);
+          const totalBuySize = Math.max(0, agg.total_buy_size || 0);
+          const totalSellSize = Math.max(0, agg.total_sell_size || 0);
+          const weightedBuy = Math.max(0, agg.weighted_avg_buy_price || 0);
+          const weightedSell = Math.max(0, agg.weighted_avg_sell_price || 0);
           const difference = totalBuySize - totalSellSize;
 
           results.push({

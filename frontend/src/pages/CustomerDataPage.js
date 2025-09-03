@@ -57,9 +57,9 @@ const CustomerDataPage = () => {
     const [user, setUser] = useState(null);
 
     // Format functions
-    const formatNumber = (value, decimals = 2) => {
+    const formatNumber = (value, decimals = 4) => {
         const num = Number(value);
-        if (isNaN(num)) return '0.00';
+        if (isNaN(num)) return '0.0000';
         return num.toLocaleString('en-US', {
             minimumFractionDigits: decimals,
             maximumFractionDigits: decimals
@@ -194,50 +194,72 @@ const CustomerDataPage = () => {
     };
 
     // Handle delete functionality - simple version
-    const handleBulkDelete = async (rowsToDelete) => {
-        console.log('handleBulkDelete called with:', rowsToDelete);
-        console.log('Current user:', user);
-        console.log('User type:', user?.user_type);
+// Fixed handleBulkDelete function for CustomerDataPage.js
+const handleBulkDelete = async (rowsToDelete) => {
+    console.log('handleBulkDelete called with:', rowsToDelete);
+    console.log('Current user:', user);
+    console.log('User type:', user?.user_type);
+    
+    if (!rowsToDelete || rowsToDelete.length === 0) {
+        alert('No rows selected for deletion');
+        return;
+    }
+
+    if (!window.confirm(`Are you sure you want to delete ${rowsToDelete.length} record(s)?`)) {
+        return;
+    }
+
+    try {
+        const ids = rowsToDelete.map(row => row.id).filter(id => id);
+        console.log('IDs to delete:', ids);
         
-        if (!rowsToDelete || rowsToDelete.length === 0) {
-            alert('No rows selected for deletion');
+        if (ids.length === 0) {
+            alert('Selected rows do not have valid IDs');
             return;
         }
 
-        if (!window.confirm(`Are you sure you want to delete ${rowsToDelete.length} record(s)?`)) {
+        // Get token from localStorage for proper authentication
+        const token = localStorage.getItem('auth_token') || localStorage.getItem('token');
+        
+        if (!token) {
+            console.error('No authentication token found');
+            alert('Authentication required. Please log in again.');
             return;
         }
 
-        try {
-            const ids = rowsToDelete.map(row => row.id).filter(id => id);
-            console.log('IDs to delete:', ids);
-            
-            if (ids.length === 0) {
-                alert('Selected rows do not have valid IDs');
-                return;
-            }
+        console.log('Making DELETE request to /api/customer-data with data:', { ids });
+        console.log('🔐 Using token:', token ? 'Present' : 'Missing');
 
-            console.log('Making DELETE request to /api/customer-data with data:', { ids });
+        const response = await axios.delete('/api/customer-data', {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            data: { ids }
+        });
 
-            const response = await axios.delete('/api/customer-data', {
-                data: { ids }
-            });
+        console.log('DELETE response:', response);
 
-            console.log('DELETE response:', response);
-
-            if (response.data.success) {
-                alert(`${response.data.affectedRows} record(s) deleted successfully`);
-                setSelectedRows(new Set()); // Clear selection
-                loadData(); // Refresh data
-            } else {
-                alert(response.data.message || 'Failed to delete data');
-            }
-        } catch (error) {
-            console.error('Error deleting data:', error);
-            console.error('Error response:', error.response);
-            alert(error.response?.data?.error || 'Failed to delete data');
+        if (response.data.success) {
+            alert(`${response.data.affectedRows} record(s) deleted successfully`);
+            setSelectedRows(new Set()); // Clear selection
+            loadData(); // Refresh data
+        } else {
+            alert(response.data.message || 'Failed to delete data');
         }
-    };
+    } catch (error) {
+        console.error('Error deleting data:', error);
+        console.error('Error response:', error.response);
+        
+        if (error.response?.status === 401 || error.response?.status === 403) {
+            alert('Authentication failed. Please log in again.');
+            // Optionally redirect to login
+            // window.location.href = '/login';
+        } else {
+            alert(error.response?.data?.error || error.response?.data?.message || 'Failed to delete data');
+        }
+    }
+};
 
     // Handle row selection
     const handleRowSelect = (row) => {

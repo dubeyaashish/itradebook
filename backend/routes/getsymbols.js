@@ -86,10 +86,10 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
       // Format the results
       const formattedResults = results.map(row => ({
         symbolref: row.symbolref,
-        total_buy_size: parseFloat(row.total_buy_size) || 0,
-        total_sell_size: parseFloat(row.total_sell_size) || 0,
-        weighted_avg_buy_price: parseFloat(row.weighted_avg_buy_price) || 0,
-        weighted_avg_sell_price: parseFloat(row.weighted_avg_sell_price) || 0,
+        total_buy_size: row.total_buy_size || 0,
+        total_sell_size: row.total_sell_size || 0,
+        weighted_avg_buy_price: row.weighted_avg_buy_price || 0,
+        weighted_avg_sell_price: row.weighted_avg_sell_price || 0,
         last_refid: row.last_refid || ''
       }));
 

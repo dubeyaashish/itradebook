@@ -2,6 +2,7 @@ const express = require('express');
 
 module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
     const router = express.Router();
+    
     // Get comments for a symbol
     router.get('/:symbol_ref', authenticateToken, async (req, res) => {
         const { symbol_ref } = req.params;
@@ -52,7 +53,7 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
 
             await conn.query(
                 'INSERT INTO trading_comments (symbol_ref, comment, user_id, username) VALUES (?, ?, ?, ?)',
-                [symbol_ref, comment.trim(), req.user.id, req.user.username]
+                [symbol_ref, comment.trim(), req.user.id || req.user.userId, req.user.username]
             );
 
             res.json({ success: true });
@@ -64,33 +65,13 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
         }
     });
 
-    // Delete a comment
-    router.delete('/:id', async (req, res) => {
-        console.log('🔍 Delete comment - BEFORE auth middleware:', {
-            id: req.params.id,
-            authHeader: req.headers.authorization ? 'Token present' : 'No token',
-            url: req.url,
-            method: req.method
-        });
-        
-        // Call authenticateToken manually to see where it fails
-        try {
-            await new Promise((resolve, reject) => {
-                authenticateToken(req, res, (err) => {
-                    if (err) reject(err);
-                    else resolve();
-                });
-            });
-        } catch (authError) {
-            console.log('❌ Authentication failed:', authError);
-            return res.status(403).json({ success: false, message: 'Authentication failed', error: authError.message });
-        }
-        
+    // Delete a comment - FIXED for regular users
+    router.delete('/:id', authenticateToken, async (req, res) => {
         const { id } = req.params;
         
-        console.log('🔍 Delete comment - AFTER auth middleware:', {
+        console.log('🔍 Delete comment request:', {
             id,
-            user: req.user ? { id: req.user.id, username: req.user.username, type: req.user.user_type } : 'NO USER'
+            user: req.user ? { id: req.user.id || req.user.userId, username: req.user.username, type: req.user.user_type || req.user.userType } : 'NO USER'
         });
         
         if (!id) {
@@ -102,9 +83,9 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
         try {
             conn = await pool.getConnection();
             
-            // First, check if the comment exists
+            // First, check if the comment exists and get its details
             const commentCheck = await conn.query(
-                'SELECT id, user_id, username FROM trading_comments WHERE id = ?',
+                'SELECT id, user_id, username, symbol_ref FROM trading_comments WHERE id = ?',
                 [id]
             );
             
@@ -114,11 +95,42 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
                 console.log('❌ Comment not found in database');
                 return res.status(404).json({ success: false, message: 'Comment not found' });
             }
-            
-            // Allow all authenticated users to delete any comment
+
+            const comment = commentCheck[0];
+            const currentUserId = req.user.id || req.user.userId;
+            const userType = req.user.user_type || req.user.userType;
+
+            // Permission check: 
+            // - Admin users can delete any comment
+            // - Regular/managed users can delete their own comments OR any comment (for now, allowing all authenticated users)
+            // - Check symbol access for managed users
+            if (userType === 'managed') {
+                const allowed = await getAllowedSymbols(conn, req);
+                if (allowed && !allowed.includes(comment.symbol_ref)) {
+                    console.log('❌ Access denied to symbol for managed user');
+                    return res.status(403).json({ success: false, message: 'Access denied to this symbol' });
+                }
+            }
+
+            // For regular users and all others, allow deletion (you can modify this logic as needed)
+            const canDelete = userType === 'admin' || 
+                             userType === 'regular' || 
+                             userType === 'managed' || 
+                             comment.user_id === currentUserId;
+
+            if (!canDelete) {
+                console.log('❌ User cannot delete this comment');
+                return res.status(403).json({ success: false, message: 'You can only delete your own comments' });
+            }
+
+            // Delete the comment
             const result = await conn.query('DELETE FROM trading_comments WHERE id = ?', [id]);
             
             console.log('✅ Delete result:', { affectedRows: result.affectedRows });
+            
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ success: false, message: 'Comment not found or already deleted' });
+            }
             
             res.json({ success: true });
         } catch (err) {

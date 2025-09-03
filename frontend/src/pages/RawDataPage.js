@@ -235,8 +235,8 @@ const RawDataPage = () => {
     URL.revokeObjectURL(url);
   };
 
-  // Handle delete functionality
-  const handleBulkDelete = async (rowsToDelete) => {
+// Fixed handleBulkDelete function for RawDataPage.js
+const handleBulkDelete = async (rowsToDelete) => {
     if (!rowsToDelete || rowsToDelete.length === 0) {
       alert('No rows selected for deletion');
       return;
@@ -247,7 +247,15 @@ const RawDataPage = () => {
     }
 
     try {
-      const token = localStorage.getItem('token');
+      // Get token from localStorage with proper key
+      const token = localStorage.getItem('auth_token') || localStorage.getItem('token');
+      
+      if (!token) {
+        console.error('No authentication token found');
+        setError('Authentication required. Please log in again.');
+        return;
+      }
+
       const ids = rowsToDelete.map(row => row.id).filter(id => id);
       
       if (ids.length === 0) {
@@ -255,10 +263,18 @@ const RawDataPage = () => {
         return;
       }
 
+      console.log('🗑️ Deleting raw data records:', ids);
+      console.log('🔐 Using token:', token ? 'Present' : 'Missing');
+
       const response = await axios.delete('/api/raw-data', {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
         data: { ids }
       });
+
+      console.log('✅ Delete response:', response.data);
 
       if (response.data.success) {
         alert(`${response.data.affectedRows} record(s) deleted successfully`);
@@ -269,10 +285,17 @@ const RawDataPage = () => {
       }
     } catch (error) {
       console.error('Error deleting data:', error);
-      alert(error.response?.data?.message || 'Failed to delete data');
+      
+      if (error.response?.status === 401 || error.response?.status === 403) {
+        alert('Authentication failed. Please log in again.');
+        setError('Session expired. Please log in again.');
+      } else {
+        const errorMsg = error.response?.data?.message || error.response?.data?.error || 'Failed to delete data';
+        alert(errorMsg);
+        setError(errorMsg);
+      }
     }
   };
-
   // Handle row selection
   const handleRowSelect = (row) => {
     const newSelected = new Set(selectedRows);

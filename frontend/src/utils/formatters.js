@@ -1,6 +1,6 @@
-export const formatNumber = (value, decimals = 2) => {
+export const formatNumber = (value, decimals = 4) => {
     const num = Number(value);
-    if (isNaN(num)) return '0.00';
+    if (isNaN(num)) return '0.0000';
     return num.toLocaleString('en-US', {
         minimumFractionDigits: decimals,
         maximumFractionDigits: decimals
