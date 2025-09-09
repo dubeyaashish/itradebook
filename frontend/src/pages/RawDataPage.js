@@ -266,12 +266,11 @@ const handleBulkDelete = async (rowsToDelete) => {
       console.log('🗑️ Deleting raw data records:', ids);
       console.log('🔐 Using token:', token ? 'Present' : 'Missing');
 
-      const response = await axios.delete('/api/raw-data', {
+      const response = await axios.post('/api/raw-data/delete', { ids }, {
         headers: { 
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
-        },
-        data: { ids }
+        }
       });
 
       console.log('✅ Delete response:', response.data);

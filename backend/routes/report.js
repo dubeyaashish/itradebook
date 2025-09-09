@@ -71,7 +71,7 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
             // Sort handling
             const validColumns = [
                 'id', 'refid', 'buysize', 'buyprice', 'sellsize', 'sellprice', 
-                'symbolref', 'date', 'type'
+                'symbolref', 'date', 'type', 'comment'
             ];
             const orderBy = validColumns.includes(req.query.order_by) ? req.query.order_by : 'date';
             const orderDir = req.query.order_dir === 'asc' ? 'ASC' : 'DESC';
@@ -81,7 +81,7 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
                 SELECT 
                     id, refid,
                     buysize, buyprice, sellsize, sellprice,
-                    symbolref, date, type,
+                    symbolref, date, type, comment, 
                     buysize as buysize1, buyprice as buyprice1,
                     sellsize as sellsize1, sellprice as sellprice1,
                     0 as buysize2, 0 as buyprice2,
@@ -151,11 +151,16 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
             const allowed = await getAllowedSymbols(conn, req);
             
             // Check if user has permission for this symbol
-            if (allowed && allowed.length > 0 && !allowed.includes(req.body.symbolref)) {
-                return res.status(403).json({ error: 'Permission denied for this symbol' });
-            } else if (Array.isArray(allowed) && allowed.length === 0) {
-                return res.status(403).json({ error: 'No symbol permissions' });
+            // Only check permissions for managed users (when allowed is an array)
+            if (Array.isArray(allowed)) {
+                if (allowed.length === 0) {
+                    return res.status(403).json({ error: 'No symbol permissions' });
+                }
+                if (!allowed.includes(req.body.symbolref)) {
+                    return res.status(403).json({ error: 'Permission denied for this symbol' });
+                }
             }
+            // For regular users (allowed === null), no permission check needed
 
             const {
                 refid,
@@ -202,28 +207,14 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
         let conn;
         try {
             conn = await pool.getConnection();
-            const allowed = await getAllowedSymbols(conn, req);
             
             const ids = req.body.ids;
             if (!ids || !Array.isArray(ids) || ids.length === 0) {
                 return res.status(400).json({ error: 'No IDs provided' });
             }
 
-            // Check permissions for all records being deleted
-            let permissionQuery = 'SELECT id, symbolref FROM `receive.itradebook` WHERE id IN (';
-            permissionQuery += ids.map(() => '?').join(',') + ')';
+            // NO PERMISSION CHECKS - ALLOW EVERYONE TO DELETE
             
-            const records = await conn.query(permissionQuery, ids);
-            
-            if (allowed && allowed.length > 0) {
-                const unauthorizedRecords = records.filter(record => !allowed.includes(record.symbolref));
-                if (unauthorizedRecords.length > 0) {
-                    return res.status(403).json({ error: 'Permission denied for some records' });
-                }
-            } else if (Array.isArray(allowed) && allowed.length === 0) {
-                return res.status(403).json({ error: 'No symbol permissions' });
-            }
-
             // Delete the records
             let deleteQuery = 'DELETE FROM `receive.itradebook` WHERE id IN (';
             deleteQuery += ids.map(() => '?').join(',') + ')';
@@ -339,6 +330,7 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
     router.get('/refids', authenticateToken, refidsHandler);
     router.post('/data', authenticateToken, insertHandler);
     router.delete('/data', authenticateToken, deleteHandler);
+    router.post('/data/delete', authenticateToken, deleteHandler); // Add POST route for delete
 
     // Return both the router and individual handlers
     return {

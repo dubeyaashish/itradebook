@@ -96,8 +96,7 @@ const Layout = ({ children }) => {
           label: 'Trading Cards',
           icon: 'fas fa-file-alt',
           description: 'Live Cards'
-        },
-        apisGroup
+        }
       ];
     }
 
@@ -140,7 +139,9 @@ const Layout = ({ children }) => {
       {/* Sidebar */}
       <aside className={`sidebar ${isSidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-header">
-          <h1>itradebook</h1>
+          <div className="logo-container">
+            <img src="/logo.png" alt="itradebook" className="logo" />
+          </div>
           <span className="page-subtitle">{currentItem?.description}</span>
         </div>
 

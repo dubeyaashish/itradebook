@@ -414,7 +414,7 @@ const PLReportPage = () => {
   const showBEF = !compactView; // Balance / Equity / Floating
 
   return (
-    <div className="pl-report-page bg-gray-100 min-h-screen py-5 px-4 sm:px-6 lg:px-8">
+    <div className="pl-report-page bg-gray-100 min-h-screen pb-5 px-4 sm:px-6 lg:px-8">
       {/* Filters Section */}
       <div className="data-container mb-4">
         <div className="p-4">

@@ -1370,7 +1370,8 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
       }
 
       // Check permissions for each record
-      if (allowedSymbols) {
+      // Only check permissions for managed users (when allowedSymbols is an array)
+      if (Array.isArray(allowedSymbols)) {
         const checkQuery = `SELECT id, symbol_ref FROM trading_data WHERE id IN (${ids.map(() => '?').join(',')})`;
         const records = await conn.query(checkQuery, ids);
         
@@ -1383,6 +1384,7 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
           }
         }
       }
+      // For regular users (allowedSymbols === null), no permission check needed
 
       const deleteQuery = `DELETE FROM trading_data WHERE id IN (${ids.map(() => '?').join(',')})`;
       const result = await conn.query(deleteQuery, ids);

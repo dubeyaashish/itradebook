@@ -9,6 +9,18 @@ router.get('/', authenticateToken, async (req, res) => {
     try {
         conn = await pool.getConnection();
         const allowedSymbols = await getAllowedSymbols(conn, req);
+        
+        // Comprehensive debug logging for managed users
+        console.log('=== CUSTOMER DATA DEBUG ===');
+        console.log('req.user:', req.user);
+        console.log('req.session:', req.session);
+        console.log('User Type:', req.user?.user_type || req.user?.userType || req.session?.user_type);
+        console.log('User ID:', req.user?.id || req.user?.userId || req.session?.user_id);
+        console.log('Allowed Symbols from getAllowedSymbols:', allowedSymbols);
+        console.log('allowedSymbols !== null:', allowedSymbols !== null);
+        console.log('Array.isArray(allowedSymbols):', Array.isArray(allowedSymbols));
+        console.log('allowedSymbols.length:', allowedSymbols?.length);
+        console.log('==============================');
 
         // Pagination setup
         const limit = 30;
@@ -75,16 +87,53 @@ router.get('/', authenticateToken, async (req, res) => {
             params.push(...symbolRefs);
         }
 
-        // Add symbol restriction for managed users
+        // Add symbol restriction for managed users - use BOTH parent_user_id AND allowed symbols
         if (allowedSymbols !== null && !req.query.mt5) {
-            const subUsersQuery = 'SELECT DISTINCT sub_username FROM sub_users WHERE status = "active" AND parent_user_id = ?';
-            const subUsersResult = await conn.query(subUsersQuery, [req.session.user_id]);
-            const allowedSubUsernames = subUsersResult.map(row => row.sub_username);
+            let allowedSubUsernames = [];
+            const userId = req.user?.id || req.user?.userId || req.session.user_id;
+            
+            if (userId) {
+                // Debug: Check what sub_users exist for this parent_user_id
+                const debugSubUsersQuery = 'SELECT sub_username, symbol_ref FROM sub_users WHERE status = "active" AND parent_user_id = ?';
+                const debugSubUsersResult = await conn.query(debugSubUsersQuery, [userId]);
+                console.log('Debug - All sub_users for parent_user_id', userId, ':', debugSubUsersResult);
+                
+                // Debug: Check what symbols are in sub_users table
+                const debugSymbolsQuery = 'SELECT DISTINCT symbol_ref FROM sub_users WHERE status = "active" AND symbol_ref IS NOT NULL';
+                const debugSymbolsResult = await conn.query(debugSymbolsQuery);
+                console.log('Debug - All distinct symbols in sub_users table:', debugSymbolsResult.map(r => r.symbol_ref));
+                
+                // Base query: get sub_users by parent_user_id first
+                let subUsersQuery = 'SELECT DISTINCT sub_username FROM sub_users WHERE status = "active" AND parent_user_id = ?';
+                let queryParams = [userId];
+                
+                // Then filter by allowed symbols if available
+                if (Array.isArray(allowedSymbols) && allowedSymbols.length > 0) {
+                    const symbolPlaceholders = allowedSymbols.map(() => '?').join(',');
+                    subUsersQuery += ` AND symbol_ref IN (${symbolPlaceholders})`;
+                    queryParams.push(...allowedSymbols);
+                    console.log('Final query:', subUsersQuery);
+                    console.log('Query params:', queryParams);
+                    console.log('Managed user - Using BOTH parent_user_id AND allowed symbols:', allowedSymbols);
+                } else {
+                    console.log('Managed user - Using only parent_user_id (no symbol restrictions)');
+                }
+                
+                const subUsersResult = await conn.query(subUsersQuery, queryParams);
+                allowedSubUsernames = subUsersResult.map(row => row.sub_username);
+                
+                console.log('Managed user - Final allowed MT5 usernames:', allowedSubUsernames);
+            } else if (req.user?.allowedSubUsers && Array.isArray(req.user.allowedSubUsers)) {
+                // Fallback: use allowedSubUsers from JWT token
+                allowedSubUsernames = req.user.allowedSubUsers;
+                console.log('Using allowedSubUsers from JWT:', allowedSubUsernames);
+            }
             
             if (allowedSubUsernames.length > 0) {
                 whereConditions.push(`mt5 IN (?${',?'.repeat(allowedSubUsernames.length - 1)})`);
                 params.push(...allowedSubUsernames);
             } else {
+                console.log('No allowed sub usernames found - showing no data');
                 whereConditions.push('1=0');
             }
         }
@@ -110,40 +159,70 @@ router.get('/', authenticateToken, async (req, res) => {
             [...params, limit, offset]
         );
 
-        // Get unique MT5 values for dropdown
+        // Get unique MT5 values for dropdown - use BOTH parent_user_id AND allowed symbols
         let mt5Options = [];
-        const mt5Query = 'SELECT DISTINCT sub_username AS mt5 FROM sub_users WHERE status = "active"';
         if (allowedSymbols !== null) {
-            const result = await conn.query(
-                mt5Query + ' AND parent_user_id = ?',
-                [req.session.user_id]
-            );
-            mt5Options = result;
+            // For managed users: get MT5 options using both parent_user_id and allowed symbols
+            const userId = req.user?.id || req.user?.userId || req.session.user_id;
+            if (userId) {
+                let mt5Query = 'SELECT DISTINCT sub_username AS mt5 FROM sub_users WHERE status = "active" AND parent_user_id = ?';
+                let queryParams = [userId];
+                
+                if (Array.isArray(allowedSymbols) && allowedSymbols.length > 0) {
+                    const symbolPlaceholders = allowedSymbols.map(() => '?').join(',');
+                    mt5Query += ` AND symbol_ref IN (${symbolPlaceholders})`;
+                    queryParams.push(...allowedSymbols);
+                }
+                
+                const result = await conn.query(mt5Query, queryParams);
+                mt5Options = result;
+            } else if (req.user?.allowedSubUsers && Array.isArray(req.user.allowedSubUsers)) {
+                // Fallback: use allowedSubUsers from JWT
+                const userPlaceholders = req.user.allowedSubUsers.map(() => '?').join(',');
+                const result = await conn.query(
+                    `SELECT DISTINCT sub_username AS mt5 FROM sub_users WHERE status = 'active' AND sub_username IN (${userPlaceholders})`,
+                    req.user.allowedSubUsers
+                );
+                mt5Options = result;
+            }
         } else {
-            const result = await conn.query(mt5Query);
+            // Admin users: get all MT5 options
+            const result = await conn.query('SELECT DISTINCT sub_username AS mt5 FROM sub_users WHERE status = "active"');
             mt5Options = result;
         }
 
-        // Get unique order references
+        // Get unique order references - use BOTH parent_user_id AND allowed symbols 
         const orderRefQuery = 'SELECT DISTINCT order_ref FROM customer_data WHERE order_ref IS NOT NULL AND order_ref != "" ORDER BY order_ref';
         const orderRefResult = await conn.query(orderRefQuery);
         const orderRefOptions = orderRefResult.filter(row => row.order_ref).map(row => ({ order_ref: row.order_ref }));
 
-        // Get unique symbol references for the logged-in user
+        // Get unique symbol references for the logged-in user - use BOTH parent_user_id AND allowed symbols
         let symbolRefOptions = [];
         if (allowedSymbols !== null) {
-            // For managed users, get symbol_ref from their assigned sub_users
-            const symbolRefQuery = `
-                SELECT DISTINCT s.symbol_ref 
-                FROM sub_users s 
-                WHERE s.status = 'active' 
-                AND s.parent_user_id = ? 
-                AND s.symbol_ref IS NOT NULL 
-                AND s.symbol_ref != ''
-                ORDER BY s.symbol_ref
-            `;
-            const symbolRefResult = await conn.query(symbolRefQuery, [req.session.user_id]);
-            symbolRefOptions = symbolRefResult.map(row => ({ symbol_ref: row.symbol_ref }));
+            // For managed users: get symbols using both parent_user_id and allowed symbols filter
+            const userId = req.user?.id || req.user?.userId || req.session.user_id;
+            if (userId) {
+                let symbolRefQuery = 'SELECT DISTINCT symbol_ref FROM sub_users WHERE status = "active" AND parent_user_id = ? AND symbol_ref IS NOT NULL AND symbol_ref != ""';
+                let queryParams = [userId];
+                
+                if (Array.isArray(allowedSymbols) && allowedSymbols.length > 0) {
+                    const symbolPlaceholders = allowedSymbols.map(() => '?').join(',');
+                    symbolRefQuery += ` AND symbol_ref IN (${symbolPlaceholders})`;
+                    queryParams.push(...allowedSymbols);
+                }
+                
+                symbolRefQuery += ' ORDER BY symbol_ref';
+                const symbolRefResult = await conn.query(symbolRefQuery, queryParams);
+                symbolRefOptions = symbolRefResult.map(row => ({ symbol_ref: row.symbol_ref }));
+            } else if (req.user?.allowedSubUsers && Array.isArray(req.user.allowedSubUsers)) {
+                // Fallback: get symbol_ref from allowedSubUsers
+                const userPlaceholders = req.user.allowedSubUsers.map(() => '?').join(',');
+                const symbolRefResult = await conn.query(
+                    `SELECT DISTINCT symbol_ref FROM sub_users WHERE status = 'active' AND sub_username IN (${userPlaceholders}) AND symbol_ref IS NOT NULL AND symbol_ref != '' ORDER BY symbol_ref`,
+                    req.user.allowedSubUsers
+                );
+                symbolRefOptions = symbolRefResult.map(row => ({ symbol_ref: row.symbol_ref }));
+            }
         } else {
             // For admin users, get all symbol_ref from sub_users
             const symbolRefQuery = `
@@ -279,6 +358,43 @@ router.get('/export-csv', authenticateToken, async (req, res) => {
 
 // Delete rows - allow everyone to delete (no authentication required)
 router.delete('/', async (req, res) => {
+    let conn;
+    try {
+        conn = await pool.getConnection();
+
+        const { ids } = req.body;
+        
+        if (!ids || !Array.isArray(ids) || !ids.length) {
+            return res.status(400).json({
+                success: false,
+                error: 'No rows selected for deletion'
+            });
+        }
+
+        const result = await conn.query(
+            `DELETE FROM customer_data WHERE id IN (${ids.map(() => '?').join(',')})`,
+            ids
+        );
+
+        res.json({
+            success: true,
+            message: 'Selected rows deleted successfully',
+            affectedRows: result.affectedRows
+        });
+
+    } catch (error) {
+        console.error('Error deleting customer data:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error'
+        });
+    } finally {
+        if (conn) conn.release();
+    }
+});
+
+// POST delete route for IIS compatibility - same logic as DELETE
+router.post('/delete', async (req, res) => {
     let conn;
     try {
         conn = await pool.getConnection();

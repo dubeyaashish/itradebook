@@ -46,7 +46,7 @@ app.use(cors({
     const allowedOrigins = [
       'https://web.itradebook.com',
       'https://www.web.itradebook.com',
-      // Add your Plesk domain here
+      // Add your Plesk domain here when you know it
     ];
     
     // Development origins
@@ -66,6 +66,13 @@ app.use(cors({
       if(origin.includes('localhost') || origin.includes('127.0.0.1')) {
         return callback(null, true);
       }
+    }
+    
+    // TEMPORARY: Allow all origins for debugging Plesk deployment
+    // Remove this after deployment is working
+    if (process.env.NODE_ENV === 'production') {
+      console.log('🔧 PRODUCTION: Allowing origin for debugging:', origin);
+      return callback(null, true);
     }
     
     if(allowedOrigins.includes(origin)) {
@@ -88,10 +95,10 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === 'production', // true in production with HTTPS
+      secure: false, // Temporarily disable secure for debugging - enable after HTTPS is confirmed
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
       httpOnly: true,
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
+      sameSite: 'lax' // Use lax for better compatibility with Plesk
     }
   })
 );
@@ -193,13 +200,23 @@ const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
+  console.log('🔐 Auth attempt:', {
+    hasAuthHeader: !!authHeader,
+    hasToken: !!token,
+    origin: req.headers.origin,
+    userAgent: req.headers['user-agent']?.substring(0, 100),
+    ip: req.ip || req.connection.remoteAddress
+  });
+
   if (!token) {
+    console.log('❌ No token provided');
     return res.status(401).json({ error: 'Access token required' });
   }
 
   let conn;
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret');
+    console.log('✅ Token decoded successfully:', { userId: decoded.userId });
     
     conn = await getDbConnection(pool);
       
@@ -226,6 +243,7 @@ const authenticateToken = async (req, res, next) => {
     }
     
     if (users.length === 0) {
+      console.log('❌ User not found in database:', decoded.userId);
       return res.status(401).json({ error: 'User not found or inactive' });
     }
     
@@ -247,7 +265,7 @@ const authenticateToken = async (req, res, next) => {
     req.session.user_id = user.id;
     req.session.user_type = user.user_type || 'regular';
     
-    console.log('🔐 User authenticated:', {
+    console.log('🔐 User authenticated successfully:', {
       id: req.user.id,
       username: req.user.username,
       type: req.user.user_type
@@ -255,11 +273,23 @@ const authenticateToken = async (req, res, next) => {
     
     next();
   } catch (err) {
-    console.error('Token verification error:', err);
+    console.error('❌ Token verification error:', {
+      name: err.name,
+      message: err.message,
+      code: err.code
+    });
     
     if (err.code === 'ER_GET_CONNECTION_TIMEOUT' || err.code === 'ER_TOO_MANY_USER_CONNECTIONS') {
       console.error('Database connection issue in auth middleware:', err.message);
       return res.status(503).json({ error: 'Service temporarily unavailable. Please try again.' });
+    }
+    
+    if (err.name === 'TokenExpiredError') {
+      return res.status(403).json({ error: 'Token expired' });
+    }
+    
+    if (err.name === 'JsonWebTokenError') {
+      return res.status(403).json({ error: 'Invalid token' });
     }
     
     return res.status(403).json({ error: 'Invalid or expired token' });
@@ -276,18 +306,31 @@ const authenticateToken = async (req, res, next) => {
 
 // Helper functions
 async function getAllowedSymbols(conn, req) {
-  const userType = req.user?.user_type || req.session.user_type || 'regular';
+  const userType = req.user?.user_type || req.user?.userType || req.session.user_type || 'regular';
+  const userId = req.user?.id || req.user?.userId || req.session.user_id || 0;
+  
+  console.log('=== getAllowedSymbols DEBUG ===');
+  console.log('User Type:', userType);
+  console.log('User ID:', userId);
+  console.log('req.user:', req.user);
+  console.log('req.session:', req.session);
   
   if (userType === 'managed') {
-    const userId = req.user?.id || req.session.user_id || 0;
-    if (!userId) return [];
+    if (!userId) {
+      console.log('No userId found for managed user - returning empty array');
+      return [];
+    }
     
     try {
+      console.log('Querying user_symbol_permissions for user_id:', userId);
       const rows = await conn.query(
         'SELECT symbol_ref FROM user_symbol_permissions WHERE user_id = ?',
         [userId]
       );
-      return rows.map((r) => r.symbol_ref);
+      const symbols = rows.map((r) => r.symbol_ref);
+      console.log('Found symbols:', symbols);
+      console.log('===============================');
+      return symbols;
     } catch (error) {
       console.error('Error getting allowed symbols:', error);
       if (error.code === 'ER_GET_CONNECTION_TIMEOUT' || error.code === 'ER_TOO_MANY_USER_CONNECTIONS') {
@@ -297,6 +340,8 @@ async function getAllowedSymbols(conn, req) {
     }
   }
   
+  console.log('Not a managed user - returning null (no restrictions)');
+  console.log('===============================');
   return null; // null means no restriction
 }
 
@@ -685,7 +730,8 @@ try {
 try {
   if (report && report._delete) {
     app.delete('/api/data', ...report._delete);  // Delete route for reporting data
-    console.log('✓ Report delete route mounted');
+    app.post('/api/data/delete', ...report._delete);  // POST delete route for IIS compatibility
+    console.log('✓ Report delete routes mounted (DELETE and POST)');
   }
 } catch (error) {
   console.error('✗ Error mounting report delete route:', error.message);
@@ -858,6 +904,55 @@ app.get('/api/test', (req, res) => {
     message: 'API is working', 
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Enhanced debug route with detailed environment info
+app.get('/api/debug', (req, res) => {
+  try {
+    const debugInfo = {
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
+      nodeVersion: process.version,
+      platform: process.platform,
+      headers: req.headers,
+      session: {
+        exists: !!req.session,
+        id: req.session?.id,
+        user_id: req.session?.user_id,
+        user_type: req.session?.user_type
+      },
+      cookies: req.headers.cookie ? 'Present' : 'None',
+      origin: req.headers.origin || 'None',
+      userAgent: req.headers['user-agent'] || 'None',
+      ip: req.ip || req.connection.remoteAddress || 'Unknown',
+      url: req.url,
+      method: req.method
+    };
+    
+    console.log('🔍 Debug request:', debugInfo);
+    res.json(debugInfo);
+  } catch (error) {
+    console.error('Debug route error:', error);
+    res.status(500).json({ 
+      error: 'Debug route failed', 
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Test authentication route
+app.get('/api/auth-test', authenticateToken, (req, res) => {
+  res.json({
+    message: 'Authentication working',
+    user: {
+      id: req.user.id,
+      username: req.user.username,
+      user_type: req.user.user_type,
+      email: req.user.email
+    },
+    timestamp: new Date().toISOString()
   });
 });
 

@@ -65,17 +65,11 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
         }
     });
 
-    // Delete a comment - FIXED for regular users
+    // Delete a comment
     router.delete('/:id', authenticateToken, async (req, res) => {
         const { id } = req.params;
         
-        console.log('🔍 Delete comment request:', {
-            id,
-            user: req.user ? { id: req.user.id || req.user.userId, username: req.user.username, type: req.user.user_type || req.user.userType } : 'NO USER'
-        });
-        
         if (!id) {
-            console.log('❌ Missing comment ID');
             return res.status(400).json({ success: false, message: 'Missing id' });
         }
 
@@ -83,50 +77,10 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
         try {
             conn = await pool.getConnection();
             
-            // First, check if the comment exists and get its details
-            const commentCheck = await conn.query(
-                'SELECT id, user_id, username, symbol_ref FROM trading_comments WHERE id = ?',
-                [id]
-            );
+            // NO PERMISSION CHECKS - ALLOW EVERYONE TO DELETE ANY COMMENT
             
-            console.log('🔍 Comment check result:', commentCheck);
-            
-            if (commentCheck.length === 0) {
-                console.log('❌ Comment not found in database');
-                return res.status(404).json({ success: false, message: 'Comment not found' });
-            }
-
-            const comment = commentCheck[0];
-            const currentUserId = req.user.id || req.user.userId;
-            const userType = req.user.user_type || req.user.userType;
-
-            // Permission check: 
-            // - Admin users can delete any comment
-            // - Regular/managed users can delete their own comments OR any comment (for now, allowing all authenticated users)
-            // - Check symbol access for managed users
-            if (userType === 'managed') {
-                const allowed = await getAllowedSymbols(conn, req);
-                if (allowed && !allowed.includes(comment.symbol_ref)) {
-                    console.log('❌ Access denied to symbol for managed user');
-                    return res.status(403).json({ success: false, message: 'Access denied to this symbol' });
-                }
-            }
-
-            // For regular users and all others, allow deletion (you can modify this logic as needed)
-            const canDelete = userType === 'admin' || 
-                             userType === 'regular' || 
-                             userType === 'managed' || 
-                             comment.user_id === currentUserId;
-
-            if (!canDelete) {
-                console.log('❌ User cannot delete this comment');
-                return res.status(403).json({ success: false, message: 'You can only delete your own comments' });
-            }
-
             // Delete the comment
             const result = await conn.query('DELETE FROM trading_comments WHERE id = ?', [id]);
-            
-            console.log('✅ Delete result:', { affectedRows: result.affectedRows });
             
             if (result.affectedRows === 0) {
                 return res.status(404).json({ success: false, message: 'Comment not found or already deleted' });
@@ -134,7 +88,7 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
             
             res.json({ success: true });
         } catch (err) {
-            console.error('❌ Delete comment error:', err);
+            console.error('Delete comment error:', err);
             res.status(500).json({ success: false, message: 'Server error occurred' });
         } finally {
             if (conn) conn.release();

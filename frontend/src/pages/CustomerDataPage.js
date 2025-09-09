@@ -227,15 +227,14 @@ const handleBulkDelete = async (rowsToDelete) => {
             return;
         }
 
-        console.log('Making DELETE request to /api/customer-data with data:', { ids });
+        console.log('Making POST request to /api/customer-data/delete with data:', { ids });
         console.log('🔐 Using token:', token ? 'Present' : 'Missing');
 
-        const response = await axios.delete('/api/customer-data', {
+        const response = await axios.post('/api/customer-data/delete', { ids }, {
             headers: {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json'
-            },
-            data: { ids }
+            }
         });
 
         console.log('DELETE response:', response);
@@ -335,7 +334,7 @@ const handleBulkDelete = async (rowsToDelete) => {
     };
 
     return (
-        <div className="pl-report-page bg-gray-100 min-h-screen py-2 sm:py-5 px-2 sm:px-4 lg:px-8">
+        <div className="pl-report-page bg-gray-100 min-h-screen pb-2 sm:pb-5 px-2 sm:px-4 lg:px-8">
             {/* Filters Section */}
             <div className="pl-table-container mb-4 sm:mb-6 bg-white shadow rounded-lg">
                 <div className="pl-table-header border-b border-gray-200 bg-gray-50 px-4 sm:px-6 py-3 sm:py-4">

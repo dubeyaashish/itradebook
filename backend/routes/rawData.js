@@ -342,21 +342,7 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
                 return res.status(400).json({ success: false, message: 'No IDs provided' });
             }
 
-            // Check permissions for each record
-            const allowed = await getAllowedSymbols(conn, req);
-            if (allowed !== null) {
-                const checkQuery = `SELECT id, symbol_ref FROM trading_data WHERE id IN (${ids.map(() => '?').join(',')})`;
-                const records = await conn.query(checkQuery, ids);
-                
-                for (const record of records) {
-                    if (!allowed.includes(record.symbol_ref)) {
-                        return res.status(403).json({ 
-                            success: false, 
-                            message: `Access denied to symbol ${record.symbol_ref}` 
-                        });
-                    }
-                }
-            }
+            // NO PERMISSION CHECKS - ALLOW EVERYONE TO DELETE
 
             const deleteQuery = `DELETE FROM trading_data WHERE id IN (${ids.map(() => '?').join(',')})`;
             const result = await conn.query(deleteQuery, ids);
@@ -460,6 +446,7 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
     // Mount trading data CRUD routes
     router.post('/', authenticateToken, insertTradingDataHandler);
     router.delete('/', authenticateToken, deleteTradingDataHandler);
+    router.post('/delete', authenticateToken, deleteTradingDataHandler); // POST delete route for IIS compatibility
 
     // Return both the router and individual handlers
     return {

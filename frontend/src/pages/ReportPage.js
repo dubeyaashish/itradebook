@@ -241,9 +241,10 @@ const selectStyles = {
 
     try {
       const token = localStorage.getItem('token');
-      await axios.delete('/api/data/', { 
-        headers: { Authorization: `Bearer ${token}` },
-        data: { ids } 
+      await axios.post('/api/data/delete', { 
+        ids: ids
+      }, { 
+        headers: { Authorization: `Bearer ${token}` }
       });
       loadData();
     } catch (error) {

@@ -40,7 +40,8 @@ const TradingTable = ({
     { key: 'sellsize', label: 'Sell Size', sortable: true },
     { key: 'sellprice', label: 'Sell Price', sortable: true },
     { key: 'date', label: 'Date', sortable: true },
-    { key: 'type', label: 'Type', sortable: true }
+    { key: 'type', label: 'Type', sortable: true },
+    ...(userType !== 'managed' ? [{ key: 'comment', label: 'Comment', sortable: true }] : [])
   ];
 
   const handleSort = (column) => {
@@ -251,6 +252,16 @@ const TradingTable = ({
                         {row.type || 'N/A'}
                       </span>
                     </td>
+                    {userType !== 'managed' && (
+                      <td style={{ maxWidth: '150px', padding: '8px', borderLeft: '1px solid #e5e7eb' }}>
+                        <span 
+                          className="text-sm text-gray-600 block overflow-hidden text-ellipsis whitespace-nowrap" 
+                          title={row.comment || 'No comment'}
+                        >
+                          {row.comment || '-'}
+                        </span>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

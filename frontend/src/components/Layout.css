@@ -1,6 +1,28 @@
+/* Remove white line/space at top */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow-x: hidden;
+}
+
+#root {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+}
+
 .app {
   display: flex;
   min-height: 100vh;
+  margin: 0;
+  padding: 0;
 }
 
 .sidebar {
@@ -20,15 +42,75 @@
 .main-wrapper {
   flex: 1;
   margin-left: 260px;
+  margin-top: 0;
+  padding-top: 0;
   transition: margin-left 0.3s ease-in-out;
   display: flex;
   flex-direction: column;
   min-height: 100vh;
 }
 
+.main-content {
+  flex: 1;
+  margin: 0;
+  padding: 0 0 67px 0;
+  background: transparent;
+}
+
+/* Footer Styling */
+.app-footer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  width: 100%;
+  height: 67px;
+  margin: 0;
+  background: var(--bg-card);
+  border-top: 1px solid var(--border-color);
+  padding: 1.375rem 2rem;
+  text-align: center;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.footer-content {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.footer-content p {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
 .sidebar-header {
-  padding: 1.5rem;
+  padding: 1rem 1rem 1.5rem 1rem;
   border-bottom: 1px solid var(--border-color);
+  min-height: 160px;
+}
+
+.logo-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  width: 100%;
+  padding: 0;
+  height: 140px;
+}
+
+.logo {
+  height: 140px;
+  width: 220px;
+  max-width: 95%;
+  object-fit: contain;
+  background: transparent;
+  transform: scale(1.2);
 }
 
 .sidebar-header h1 {
@@ -109,6 +191,11 @@
   gap: 0.5rem;
 }
 
+/* Hide hamburger button on desktop */
+.hamburger-button {
+  display: none;
+}
+
 /* Mobile styles */
 @media (max-width: 768px) {
   .sidebar {
@@ -122,6 +209,20 @@
 
   .main-wrapper {
     margin-left: 0;
+  }
+
+  .app-footer {
+    height: 60px;
+    padding: 1rem;
+  }
+
+  .footer-content p {
+    font-size: 0.8rem;
+    line-height: 1.4;
+  }
+
+  .main-content {
+    padding: 0 0 60px 0;
   }
 
   .hamburger-button {
@@ -180,6 +281,12 @@
     padding: 1rem;
   }
 
+  .logo {
+    height: 80px;
+    width: 300%;
+    max-width: 100%;
+  }
+
   .sidebar-header h1 {
     font-size: 1.5rem;
   }
@@ -198,6 +305,12 @@
 
 /* Very small phones */
 @media (max-width: 360px) {
+  .logo {
+    height: 70px;
+    width: 100%;
+    max-width: 100%;
+  }
+
   .sidebar-header h1 {
     font-size: 1.25rem;
   }
