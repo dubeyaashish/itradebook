@@ -288,6 +288,10 @@ body {
   transition: all 0.2s ease;
   margin-top: 0.5rem;
 }
+.action-row .auth-button {
+  margin-top: 0;
+  display: inline-flex;
+}
 
 .auth-button:hover:not(:disabled) {
   background: #2563eb;

@@ -22,7 +22,10 @@ router.get('/', authenticateToken, async (req, res) => {
         console.log('allowedSymbols.length:', allowedSymbols?.length);
         console.log('==============================');
 
-        // Pagination setup
+    // Debug: log incoming query params to verify filters
+    console.log('Incoming customer-data query params:', req.query);
+
+    // Pagination setup
         const limit = 30;
         const page = parseInt(req.query.page) || 1;
         const offset = (page - 1) * limit;
@@ -142,6 +145,23 @@ router.get('/', authenticateToken, async (req, res) => {
         if (req.query.filter_type === 'snapshot') {
             whereConditions.push('type LIKE ?');
             params.push('%snapshot%');
+        }
+
+        // Volume range filters (gte / lte)
+        if (req.query.volume_gte !== undefined && req.query.volume_gte !== '') {
+            const gte = parseFloat(req.query.volume_gte);
+            if (!isNaN(gte)) {
+                whereConditions.push('volume >= ?');
+                params.push(gte);
+            }
+        }
+
+        if (req.query.volume_lte !== undefined && req.query.volume_lte !== '') {
+            const lte = parseFloat(req.query.volume_lte);
+            if (!isNaN(lte)) {
+                whereConditions.push('volume <= ?');
+                params.push(lte);
+            }
         }
 
         const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
@@ -303,6 +323,23 @@ router.get('/export-csv', authenticateToken, async (req, res) => {
             const symbolRefs = Array.isArray(req.query.symbol_ref) ? req.query.symbol_ref : [req.query.symbol_ref];
             whereConditions.push(`symbol_ref IN (?${',?'.repeat(symbolRefs.length - 1)})`);
             params.push(...symbolRefs);
+        }
+
+        // Volume range filters for CSV export
+        if (req.query.volume_gte !== undefined && req.query.volume_gte !== '') {
+            const gte = parseFloat(req.query.volume_gte);
+            if (!isNaN(gte)) {
+                whereConditions.push('volume >= ?');
+                params.push(gte);
+            }
+        }
+
+        if (req.query.volume_lte !== undefined && req.query.volume_lte !== '') {
+            const lte = parseFloat(req.query.volume_lte);
+            if (!isNaN(lte)) {
+                whereConditions.push('volume <= ?');
+                params.push(lte);
+            }
         }
 
         const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';

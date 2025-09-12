@@ -439,11 +439,11 @@ const selectStyles = {
               )}
             </div>
 
-            <div className="mt-4 flex gap-3">
-              <button onClick={() => loadData()} className="auth-button">
+            <div className="mt-4 col-span-1 md:col-span-2 lg:col-span-3 xl:col-span-4 flex flex-col sm:flex-row items-end justify-end gap-3">
+              <button onClick={() => loadData()} className="auth-button w-full sm:w-auto px-4 py-2">
                 Apply Filters
               </button>
-              <button onClick={exportToCSV} className="auth-button-secondary">
+              <button onClick={exportToCSV} className="auth-button-secondary w-full sm:w-auto px-4 py-2">
                 Export CSV
               </button>
             </div>

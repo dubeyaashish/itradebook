@@ -39,8 +39,10 @@ const CustomerDataPage = () => {
     const [insertLoading, setInsertLoading] = useState(false);
 
     const [filters, setFilters] = useState({
-        start_date: '',
-        end_date: '',
+    start_date: '',
+    start_time: '',
+    end_date: '',
+    end_time: '',
         mt5: [],
         order_ref: [],
         symbol_ref: [],
@@ -49,6 +51,7 @@ const CustomerDataPage = () => {
         order_by: 'id',
         order_dir: 'desc'
     });
+
 
     // 2025 filter state (only for regular users)
     const [show2025Only, setShow2025Only] = useState(false);
@@ -69,10 +72,14 @@ const CustomerDataPage = () => {
     const formatDate = (dateString) => {
         if (!dateString) return 'N/A';
         try {
-            return new Date(dateString).toLocaleDateString('en-US', {
+            return new Date(dateString).toLocaleString('en-US', {
                 year: 'numeric',
                 month: 'short',
-                day: 'numeric'
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
             });
         } catch {
             return dateString;
@@ -95,7 +102,8 @@ const CustomerDataPage = () => {
             Object.entries(filters).forEach(([key, value]) => {
                 if (Array.isArray(value)) {
                     value.forEach(v => params.append(key, v));
-                } else if (value) {
+                } else if (value !== '' && value !== null && value !== undefined) {
+                    // include numeric zeros and other falsy-but-valid values
                     params.append(key, value);
                 }
             });
@@ -107,8 +115,15 @@ const CustomerDataPage = () => {
 
             const response = await axios.get(`/api/customer-data?${params}`);
             if (response.data.success) {
-                setData(response.data.data);
-                setPagination(response.data.pagination);
+                setData(response.data.data || []);
+                // Normalize pagination for ModernPagination
+                const respPagination = response.data.pagination || {};
+                setPagination({
+                    page: respPagination.current_page || respPagination.page || 1,
+                    totalPages: respPagination.total_pages || respPagination.totalPages || 1,
+                    total: respPagination.total_records || respPagination.total || 0,
+                    limit: respPagination.records_per_page || respPagination.limit || (respPagination.per_page || 50)
+                });
                 setMt5Options(response.data.filters.mt5Options.map(opt => ({
                     value: opt.mt5,
                     label: opt.mt5
@@ -456,6 +471,29 @@ const handleBulkDelete = async (rowsToDelete) => {
                             </select>
                         </div>
 
+                        {/* Volume Filters (gte / lte) */}
+                        <div className="form-group">
+                            <label className="block text-sm font-medium text-gray-600 mb-1.5">Volume (Min / Max)</label>
+                            <div className="flex gap-2">
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    placeholder="Min"
+                                    value={filters.volume_gte || ''}
+                                    onChange={(e) => handleFilterChange('volume_gte', e.target.value)}
+                                    className="flex-1 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                />
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    placeholder="Max"
+                                    value={filters.volume_lte || ''}
+                                    onChange={(e) => handleFilterChange('volume_lte', e.target.value)}
+                                    className="flex-1 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                />
+                            </div>
+                        </div>
+
                         {/* Sort Order */}
                         <div className="form-group">
                             <label className="block text-sm font-medium text-gray-600 mb-1.5">Sort By</label>
@@ -485,17 +523,17 @@ const handleBulkDelete = async (rowsToDelete) => {
                         </div>
 
                         {/* Action Buttons */}
-                        <div className="form-group flex items-end gap-2">
+                        <div className="form-group action-row col-span-1 sm:col-span-2 lg:col-span-3 xl:col-span-4 flex flex-row flex-wrap items-end justify-end gap-2">
                             <button
                                 onClick={loadData}
-                                className="auth-button flex-1 flex items-center justify-center gap-2"
+                                className="auth-button flex items-center justify-center gap-2 px-4 py-2 min-h-[44px]"
                             >
                                 <i className="fas fa-filter" />
                                 <span>Apply Filters</span>
                             </button>
                             <button
                                 onClick={() => setShowInsertModal(true)}
-                                className="auth-button flex-1 flex items-center justify-center gap-2"
+                                className="auth-button flex items-center justify-center gap-2 px-4 py-2 min-h-[44px]"
                             >
                                 <i className="fas fa-plus" />
                                 <span>Insert Record</span>
@@ -503,7 +541,7 @@ const handleBulkDelete = async (rowsToDelete) => {
                             {user?.user_type === 'regular' && (
                                 <button 
                                     onClick={() => setShow2025Only(!show2025Only)} 
-                                    className={`auth-button flex-1 flex items-center justify-center gap-2 ${show2025Only ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+                                    className={`auth-button flex items-center justify-center gap-2 px-4 py-2 min-h-[44px] ${show2025Only ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}
                                 >
                                     <i className="fas fa-calendar-alt" />
                                     <span>{show2025Only ? '✓ 2025 Orders Only' : 'Show 2025 Orders'}</span>
@@ -512,7 +550,7 @@ const handleBulkDelete = async (rowsToDelete) => {
                             {selectedRows.size > 0 && (
                                 <button
                                     onClick={() => handleBulkDelete(data.filter(row => selectedRows.has(row.id)))}
-                                    className="auth-button bg-red-600 hover:bg-red-700 flex-1 flex items-center justify-center gap-2"
+                                    className="auth-button bg-red-600 hover:bg-red-700 flex items-center justify-center gap-2 px-4 py-2 min-h-[44px]"
                                 >
                                     <i className="fas fa-trash" />
                                     <span>Delete Selected ({selectedRows.size})</span>

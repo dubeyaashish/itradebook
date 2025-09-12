@@ -546,20 +546,17 @@ const handleBulkDelete = async (rowsToDelete) => {
             </div>
           </div>
 
-          <div className="mt-4 flex gap-3">
-            <button onClick={() => setFilters(prev => ({ ...prev }))} className="auth-button">
+          <div className="mt-4 flex flex-col sm:flex-row items-end justify-end gap-3">
+            <button onClick={() => setFilters(prev => ({ ...prev }))} className="auth-button w-full sm:w-auto">
               <i className="fas fa-search mr-2"></i>Apply Filter
             </button>
-            <button onClick={() => setFilters(prev => ({ ...prev }))} className="auth-button-secondary">
-              <i className="fas fa-sync mr-2"></i>Get Latest Data
-            </button>
-            <button onClick={() => setShowInsertModal(true)} className="auth-button">
+            <button onClick={() => setShowInsertModal(true)} className="auth-button w-full sm:w-auto">
               <i className="fas fa-plus mr-2"></i>Insert New Record
             </button>
             {selectedRows.size > 0 && (
               <button 
                 onClick={() => handleBulkDelete(data.filter(row => selectedRows.has(row.id)))} 
-                className="auth-button bg-red-600 hover:bg-red-700"
+                className="auth-button bg-red-600 hover:bg-red-700 w-full sm:w-auto"
               >
                 <i className="fas fa-trash mr-2"></i>Delete Selected ({selectedRows.size})
               </button>

@@ -68,7 +68,7 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
         yesterdayExpFloating = yesterdayBalances.exp[row.symbol_ref].floating;
       }
     }
-    const expPln = expFloating - yesterdayExpFloating;
+    const expPln = expFloating - yesterdayExpFloating - deposit + withdrawal;
 
     // Calculate realized and unrealized P&L
     let companyRealized = 0;
@@ -403,30 +403,74 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
       const isCurrentMonth = (year === currentYear && month === currentMonth);
       
       if (isCurrentMonth) {
-        // For current month: get stored data for past days + calculate live data for today
-        const { data, totals, totalRecords } = await getMixedData(conn, year, month, symbolList, todayStr, page, limit, offset);
+        // For current month: 
+        // - All past days should already be stored (no verification needed)
+        // - Only calculate TODAY live
+        let todayData = [];
         
-        const totalPages = Math.ceil(totalRecords / limit);
+        if (page === 1) {
+          // Only calculate today's data live (past days should already be stored)
+          todayData = await calculateLiveDataForToday(conn, todayStr, symbolList);
+        }
+        
+        // Get stored data for all past days (they should already be calculated and stored)
+        const excludeToday = true; // Always exclude today since we calculate it separately
+        const { data, totals, totalRecords } = await getStoredData(conn, year, month, symbolList, page, limit, offset, excludeToday);
+        
+        // Combine today's live data with stored past days data
+        const adjustedTotalRecords = totalRecords + (todayData.length > 0 ? todayData.length : 0);
+        let combinedData = [];
+        
+        if (page === 1 && todayData.length > 0) {
+          // Page 1: Show today's data first, then stored data
+          combinedData = [...todayData, ...data.slice(0, Math.max(0, limit - todayData.length))];
+        } else if (page === 1) {
+          // Page 1 but no today's data: just stored data
+          combinedData = data;
+        } else {
+          // Other pages: adjust offset and get stored data only
+          const adjustedOffset = Math.max(0, offset - todayData.length);
+          const { data: pagedData } = await getStoredData(conn, year, month, symbolList, 1, limit, adjustedOffset, excludeToday);
+          combinedData = pagedData;
+        }
+        
+        // Calculate totals (combine today's totals with stored totals)
+        let finalTotals = { ...totals };
+        if (todayData.length > 0) {
+          const todayTotals = calculateTotalsFromData(todayData);
+          Object.keys(finalTotals).forEach(key => {
+            finalTotals[key] = Math.round(((finalTotals[key] || 0) + (todayTotals[key] || 0)) * 100) / 100;
+          });
+        }
+        if (page === 1 && todayData.length > 0) {
+          const todayTotals = calculateTotalsFromData(todayData);
+          Object.keys(finalTotals).forEach(key => {
+            finalTotals[key] = Math.round(((finalTotals[key] || 0) + (todayTotals[key] || 0)) * 100) / 100;
+          });
+        }
+        
+        const totalPages = Math.ceil(adjustedTotalRecords / limit);
         res.json({
           success: true,
-          data,
-          totals,
+          data: combinedData,
+          totals: finalTotals,
           pagination: {
             current_page: page,
             total_pages: totalPages,
-            total_records: parseInt(totalRecords),
+            total_records: parseInt(adjustedTotalRecords),
             records_per_page: limit
           },
           filters: { year, month, symbol: req.query.symbol_ref || '' },
           data_info: { 
             current_month: true, 
-            live_calculation: true,
-            today_calculated_live: true
+            live_calculation_today_only: true,
+            past_days_from_stored_table: true,
+            no_verification_overhead: true
           }
         });
       } else {
-        // For past months: ensure all data is stored, then return stored data
-        await ensurePastMonthDataStored(conn, year, month, symbolList);
+        // For past months: All data should already be stored and finalized
+        // No verification or calculation needed - just fetch from stored table
         const { data, totals, totalRecords } = await getStoredData(conn, year, month, symbolList, page, limit, offset);
         
         const totalPages = Math.ceil(totalRecords / limit);
@@ -443,8 +487,8 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
           filters: { year, month, symbol: req.query.symbol_ref || '' },
           data_info: { 
             current_month: false, 
-            live_calculation: false,
-            all_data_stored: true
+            all_data_from_stored_table: true,
+            no_calculations_needed: true
           }
         });
       }
@@ -679,8 +723,35 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
     }
   }
 
+  // Enhanced cache for storage check results (expires every 30 minutes)
+  let storageCheckCache = {
+    lastCheck: null,
+    monthYear: null,
+    isComplete: false
+  };
+
+  const STORAGE_CHECK_CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+
+  // Check if storage check cache is valid
+  const isStorageCheckCacheValid = (year, month) => {
+    const now = Date.now();
+    const monthYearKey = `${year}-${month}`;
+    
+    return storageCheckCache.lastCheck && 
+           storageCheckCache.monthYear === monthYearKey &&
+           storageCheckCache.isComplete &&
+           (now - storageCheckCache.lastCheck) < STORAGE_CHECK_CACHE_DURATION;
+  };
+
   // Ensure past days in current month are stored
   async function ensureCurrentMonthPastDaysStored(conn, year, month, symbolList, todayStr) {
+    // Check cache first to avoid expensive storage checks
+    if (isStorageCheckCacheValid(year, month)) {
+      console.log('📦 Using cached storage check - skipping expensive verification');
+      return;
+    }
+
+    console.log('🔍 Performing storage verification for current month...');
     // Get all trading dates in this month before today
     let symbolFilter = '';
     if (symbolList && symbolList.length > 0) {
@@ -714,6 +785,15 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
         await storeDataForDate(conn, dateStr, symbolList, true);
       }
     }
+    
+    // Update cache after successful completion
+    storageCheckCache = {
+      lastCheck: Date.now(),
+      monthYear: `${year}-${month}`,
+      isComplete: true
+    };
+    
+    console.log('✅ Storage verification completed and cached');
   }
 
   // Ensure all data for a past month is stored
@@ -933,35 +1013,8 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
     
     const data = await conn.query(dataSql, [year, month, limit, offset]);
     
-    // Calculate Company PLN for each row on the fly
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i];
-      
-      // Get yesterday's equity for this symbol from stored data
-      const previousDay = new Date(row.trade_date);
-      previousDay.setDate(previousDay.getDate() - 1);
-      const yesterdayDate = previousDay.toISOString().split('T')[0];
-      
-      const yesterdayQuery = `
-        SELECT company_equity 
-        FROM pl_report_daily 
-        WHERE trade_date = ? AND symbol_ref = ?
-      `;
-      const yesterdayResult = await conn.query(yesterdayQuery, [yesterdayDate, row.symbol_ref]);
-      const yesterdayEquity = yesterdayResult.length > 0 ? parseFloat(yesterdayResult[0].company_equity) || 0 : 0;
-      
-      // Calculate Company PLN = Today's Equity - Yesterday's Equity - Deposit + Withdrawal
-      const todayEquity = parseFloat(row.company_equity) || 0;
-      const rawCompanyPln = todayEquity - yesterdayEquity;
-      const deposit = parseFloat(row.company_deposit) || 0;
-      const withdrawal = parseFloat(row.company_withdrawal) || 0;
-      const adjustedCompanyPln = rawCompanyPln - deposit + withdrawal;
-      
-      // Override the stored company_pln with calculated value
-      row.company_pln = Math.round(adjustedCompanyPln * 100) / 100;
-      
-      console.log(`📊 ${row.trade_date} ${row.symbol_ref}: Equity=${todayEquity}, Yesterday=${yesterdayEquity}, Raw PLN=${rawCompanyPln}, Deposit=${deposit}, Withdrawal=${withdrawal}, Adjusted PLN=${row.company_pln}`);
-    }
+    // PLN values are now kept up-to-date in the database when deposits/withdrawals are updated
+    // No need for on-the-fly recalculation - use stored values directly for better performance
     
     // Get totals (also exclude today if needed)
     const totalsSql = `
@@ -1224,17 +1277,50 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
         
         console.log(`✅ Created new record for ${trade_date} ${symbol_ref} with Deposit=${depositAmount}, Withdrawal=${withdrawalAmount}`);
       } else {
-        // Update existing record
+        // Update existing record AND recalculate PLN
+        
+        // First, get yesterday's equity to recalculate PLN
+        const previousDay = new Date(trade_date);
+        previousDay.setDate(previousDay.getDate() - 1);
+        const yesterdayDate = previousDay.toISOString().split('T')[0];
+        
+        const yesterdayQuery = `
+          SELECT company_equity 
+          FROM pl_report_daily 
+          WHERE trade_date = ? AND symbol_ref = ?
+        `;
+        const yesterdayResult = await conn.query(yesterdayQuery, [yesterdayDate, symbol_ref]);
+        const yesterdayEquity = yesterdayResult.length > 0 ? parseFloat(yesterdayResult[0].company_equity) || 0 : 0;
+        
+        // Get current equity from the existing record
+        const currentEquity = parseFloat(existing[0].company_equity) || 0;
+        
+        // Recalculate PLN with new deposit/withdrawal values
+        // Formula: PLN = (Today Equity - Yesterday Equity) - Deposit + Withdrawal
+        const rawCompanyPln = currentEquity - yesterdayEquity;
+        const adjustedCompanyPln = rawCompanyPln - depositAmount + withdrawalAmount;
+        const finalCompanyPln = Math.round(adjustedCompanyPln * 100) / 100;
+        
+        // Update record with new deposit/withdrawal AND recalculated PLN
         const updateSql = `
           UPDATE pl_report_daily 
-          SET company_deposit = ?, company_withdrawal = ?, updated_at = CURRENT_TIMESTAMP
+          SET company_deposit = ?, 
+              company_withdrawal = ?, 
+              company_pln = ?,
+              updated_at = CURRENT_TIMESTAMP
           WHERE trade_date = ? AND symbol_ref = ?
         `;
         
-        const updateResult = await conn.query(updateSql, [depositAmount, withdrawalAmount, trade_date, symbol_ref]);
-        console.log('Update result:', updateResult);
+        const updateResult = await conn.query(updateSql, [
+          depositAmount, 
+          withdrawalAmount, 
+          finalCompanyPln,
+          trade_date, 
+          symbol_ref
+        ]);
         
-        console.log(`✅ Updated deposit/withdrawal for ${trade_date} ${symbol_ref}: Deposit=${depositAmount}, Withdrawal=${withdrawalAmount}`);
+        console.log('Update result:', updateResult);
+        console.log(`✅ Updated deposit/withdrawal AND PLN for ${trade_date} ${symbol_ref}: Deposit=${depositAmount}, Withdrawal=${withdrawalAmount}, New PLN=${finalCompanyPln} (was ${existing[0].company_pln})`);
       }
       
       res.json({ 
