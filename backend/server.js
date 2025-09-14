@@ -1488,10 +1488,10 @@ const checkForDataChanges = async () => {
 };
 
 // Check for changes every 5 seconds (lightweight check)
-setInterval(checkForDataChanges, 5000);
+setInterval(checkForDataChanges, 1000);
 
 // Broadcast live data updates every 5 seconds for DailySavedDataPage
-setInterval(broadcastLiveDataUpdate, 5000);
+setInterval(broadcastLiveDataUpdate, 1000);
 
 console.log('🔍 Real-time change detection enabled (5s intervals)');
 console.log('📡 Live data WebSocket broadcasts enabled (5s intervals)');

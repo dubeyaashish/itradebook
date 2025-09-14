@@ -193,68 +193,80 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
     }
 
     // Live data handler
-    async function liveDataHandler(req, res) {
-        let conn;
-        try {
-            // Add timeout for this endpoint
-            conn = await pool.getConnection();
-            
-            const allowed = await getAllowedSymbols(conn, req);
-            
-            if (Array.isArray(allowed) && allowed.length === 0) {
-                return res.json([]);
-            }
-
-            let params = [];
-            let symbolFilterSql = '';
-            let dateFilterSql = '';
-
-            // Add today's date filter
-            const today = new Date().toISOString().split('T')[0]; // Get YYYY-MM-DD format
-            dateFilterSql = ' AND DATE(date) = ?';
-            params.push(today);
-
-            if (allowed !== null && allowed.length > 0) {
-                symbolFilterSql = ` AND symbol_ref IN (${allowed.map(() => '?').join(',')})`;
-                params.push(...allowed);
-            }
-
-            // Query to get the second latest record for each symbol for today
-            const query = `
-                SELECT t.*,
-                       UNIX_TIMESTAMP(t.date) as timestamp
-                FROM (
-                    SELECT *,
-                           ROW_NUMBER() OVER (PARTITION BY symbol_ref ORDER BY date DESC, id DESC) as row_num
-                    FROM trading_data
-                    WHERE DATE(date) = ?
-                    ${symbolFilterSql}
-                ) t
-                WHERE t.row_num = 2
-                   OR (t.row_num = 1 AND (
-                       SELECT COUNT(*) FROM trading_data td 
-                       WHERE td.symbol_ref = t.symbol_ref AND DATE(td.date) = ?
-                   ) = 1)
-                ORDER BY t.symbol_ref, t.date DESC
-            `;
-            
-            // Adjust params for the query (need today date twice)
-            const queryParams = [today, ...params.slice(1), today];
-            
-            console.log('🔍 Starting live data query for user:', req.user?.username);
-            const startTime = Date.now();
-            const rows = await conn.query(query, queryParams);
-            const duration = Date.now() - startTime;
-            console.log(`✅ Live data query completed in ${duration}ms, returned ${rows.length} rows for today (${today})`);
-            
-            res.json(rows);
-        } catch (err) {
-            console.error('Live data fetch error:', err);
-            res.status(500).json({ error: 'Database error' });
-        } finally {
-            if (conn) conn.release();
+// Live data handler - OPTIMIZED VERSION
+async function liveDataHandler(req, res) {
+    let conn;
+    try {
+        // Add timeout for this endpoint
+        conn = await pool.getConnection();
+        
+        const allowed = await getAllowedSymbols(conn, req);
+        
+        if (Array.isArray(allowed) && allowed.length === 0) {
+            return res.json([]);
         }
+
+        let params = [];
+        let symbolFilterSql = '';
+
+        // Add today's date filter
+        const today = new Date().toISOString().split('T')[0]; // Get YYYY-MM-DD format
+        params.push(today);
+
+        if (allowed !== null && allowed.length > 0) {
+            symbolFilterSql = ` AND symbol_ref IN (${allowed.map(() => '?').join(',')})`;
+            params.push(...allowed);
+        }
+
+        // Optimized query - remove the expensive COUNT subquery
+        const query = `
+            SELECT t.*,
+                   UNIX_TIMESTAMP(t.date) as timestamp
+            FROM (
+                SELECT *,
+                       ROW_NUMBER() OVER (PARTITION BY symbol_ref ORDER BY date DESC, id DESC) as row_num
+                FROM trading_data
+                WHERE DATE(date) = ?
+                ${symbolFilterSql}
+            ) t
+            WHERE t.row_num <= 2
+            ORDER BY t.symbol_ref, t.date DESC
+        `;
+        
+        console.log('🔍 Starting optimized live data query for user:', req.user?.username);
+        const startTime = Date.now();
+        const rows = await conn.query(query, params);
+        const duration = Date.now() - startTime;
+        console.log(`✅ Live data query completed in ${duration}ms, returned ${rows.length} raw rows for today (${today})`);
+        
+        // Group by symbol and pick the right record for each
+        const resultMap = new Map();
+        rows.forEach(row => {
+            const symbolRef = row.symbol_ref;
+            const existing = resultMap.get(symbolRef);
+            
+            if (!existing) {
+                // First record for this symbol
+                resultMap.set(symbolRef, row);
+            } else if (row.row_num === 2 && existing.row_num === 1) {
+                // We found the 2nd record, replace the 1st record
+                resultMap.set(symbolRef, row);
+            }
+            // If we already have row_num = 2, keep it (ignore any row_num = 1)
+        });
+
+        // Convert back to array
+        const finalRows = Array.from(resultMap.values());
+        console.log(`📊 Filtered to ${finalRows.length} final rows (second latest per symbol)`);
+        
+        res.json(finalRows);
+    } catch (err) {
+        console.error('Live data fetch error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        if (conn) conn.release();
     }
+}
 
     // Comment functionality has been moved to dedicated /routes/comments.js
     // All comment operations are now handled by /api/comments endpoints

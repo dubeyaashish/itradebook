@@ -99,7 +99,7 @@ const useAllSymbolComments = (symbolRefs, userId) => {
   });
 };
 
-const useLiveData = (autoRefresh, userId) => {
+const useLiveData = (userId) => {  // Remove autoRefresh param
   const [lastTimestamps, setLastTimestamps] = useState({});
   
   const fetchLiveData = useCallback(async () => {
@@ -135,9 +135,9 @@ const useLiveData = (autoRefresh, userId) => {
   const query = useQuery({
     queryKey: ['liveData', userId], // Include userId in cache key
     queryFn: fetchLiveData,
-    // Hybrid approach: short polling as backup + WebSocket for instant updates
-    refetchInterval: autoRefresh ? 30000 : false, // 30 second backup polling
-    staleTime: 5000, // 5 seconds
+    // WebSocket only - no polling
+    refetchInterval: false, // Remove polling completely
+    staleTime: Infinity,    // Data is fresh until WebSocket says otherwise
     gcTime: GC_TIME,
     placeholderData: (prev) => prev,
     enabled: !!userId, // Only fetch if user is logged in
@@ -631,7 +631,7 @@ const DailySavedDataPage = () => {
     const socket = io(apiURL, {
       withCredentials: true,
       transports: ['websocket', 'polling'],
-      timeout: 5000,
+      timeout: 2000,
       forceNew: true
     });
     
@@ -678,7 +678,7 @@ const DailySavedDataPage = () => {
   }, [user?.id, currentUserId, queryClient]);
 
   // Data fetching with user-specific cache keys
-  const { data, isLoading: loading, error } = useLiveData(autoRefresh, user?.id);
+  const { data, isLoading: loading, error } = useLiveData(user?.id);
 
   // Normalize live data to an array
   const list = useMemo(() => {
