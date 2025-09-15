@@ -1,0 +1,391 @@
+// frontend/src/pages/EodReceivePage.js
+import React, { useState, useEffect, useCallback } from 'react';
+import Select from 'react-select';
+import axios from 'axios';
+import { PageHeader } from '../components/PageHeader';
+import { customSelectStyles } from '../components/SelectStyles';
+import ModernPagination from '../components/ModernPagination';
+
+// Configure axios
+axios.defaults.baseURL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+axios.defaults.withCredentials = true;
+
+const EodReceivePage = () => {
+  const [data, setData] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [selectedSymbols, setSelectedSymbols] = useState([]);
+  const [availableSymbols, setAvailableSymbols] = useState([]);
+  const [pagination, setPagination] = useState({
+    page: 1,
+    totalPages: 1,
+    total: 0,
+    limit: 50
+  });
+  const [filters, setFilters] = useState({
+    start_date: '',
+    end_date: '',
+    position_type: '',
+    page: 1
+  });
+
+  // Position type options
+  const positionTypeOptions = [
+    { value: '', label: 'All Position Types' },
+    { value: 'long', label: 'Long' },
+    { value: 'short', label: 'Short' },
+    { value: 'flat', label: 'Flat' }
+  ];
+
+  // Fetch available symbols
+  const fetchSymbols = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.get('/api/eod-receive/symbols', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setAvailableSymbols(response.data);
+    } catch (error) {
+      console.error('Failed to fetch symbols:', error);
+    }
+  }, []);
+
+  // Fetch EOD receive data
+  const fetchData = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      const token = localStorage.getItem('token');
+      const params = new URLSearchParams({
+        page: filters.page,
+        limit: pagination.limit
+      });
+
+      // Add filters
+      if (filters.start_date) params.append('start_date', filters.start_date);
+      if (filters.end_date) params.append('end_date', filters.end_date);
+      if (filters.position_type) params.append('position_type', filters.position_type);
+      
+      // Add selected symbols
+      selectedSymbols.forEach(symbol => {
+        params.append('symbolref', symbol.value);
+      });
+
+      const response = await axios.get(`/api/eod-receive?${params}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (response.data.success) {
+        setData(response.data.data || []);
+        setPagination({
+          page: response.data.pagination.current_page,
+          totalPages: response.data.pagination.total_pages,
+          total: response.data.pagination.total,
+          limit: response.data.pagination.records_per_page
+        });
+      } else {
+        setError('Failed to fetch EOD receive data');
+      }
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      setError(error.response?.data?.error || 'Failed to fetch EOD receive data');
+    } finally {
+      setLoading(false);
+    }
+  }, [filters, selectedSymbols, pagination.limit]);
+
+  // Initial load
+  useEffect(() => {
+    fetchSymbols();
+  }, [fetchSymbols]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // Handle filter changes
+  const handleFilterChange = (key, value) => {
+    setFilters(prev => ({
+      ...prev,
+      [key]: value,
+      page: key === 'page' ? value : 1 // Reset to first page unless changing page
+    }));
+  };
+
+  const handlePageChange = (newPage) => {
+    handleFilterChange('page', newPage);
+  };
+
+  // Format number with commas and fixed decimals
+  const formatNumber = (value, decimals = 4) => {
+    const num = Number(value);
+    if (isNaN(num)) return '0.0000';
+    return num.toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    });
+  };
+
+  // Format date
+  const formatDate = (dateString) => {
+    if (!dateString) return 'N/A';
+    try {
+      return new Date(dateString).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      });
+    } catch {
+      return dateString;
+    }
+  };
+
+  // Get cell class for position styling
+  const getPositionClass = (positionType) => {
+    switch (positionType) {
+      case 'long': return 'text-green-600 font-semibold';
+      case 'short': return 'text-red-600 font-semibold';
+      case 'flat': return 'text-gray-600';
+      default: return '';
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="page-container">
+        <PageHeader 
+          title="EOD Receive Data" 
+          subtitle="End-of-day receive position data"
+        />
+        <div className="loading-container">
+          <div className="loading-spinner">
+            <div className="spinner"></div>
+            <p>Loading EOD receive data...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="page-container">
+        <PageHeader 
+          title="EOD Receive Data" 
+          subtitle="End-of-day receive position data"
+        />
+        <div className="error-banner">
+          <span>{error}</span>
+          <button onClick={fetchData} className="retry-button">Try Again</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page-container">
+      <PageHeader 
+        title="EOD Receive Data" 
+        subtitle="End-of-day receive position data"
+      />
+      
+      {/* Filter Section */}
+      <div className="filter-container">
+        <div className="filter-card">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mb-4">
+            <div className="form-group">
+              <label className="block text-sm font-medium text-gray-600 mb-1.5">Start Date</label>
+              <input
+                type="date"
+                value={filters.start_date}
+                onChange={(e) => handleFilterChange('start_date', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div className="form-group">
+              <label className="block text-sm font-medium text-gray-600 mb-1.5">End Date</label>
+              <input
+                type="date"
+                value={filters.end_date}
+                onChange={(e) => handleFilterChange('end_date', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div className="form-group">
+              <label className="block text-sm font-medium text-gray-600 mb-1.5">Position Type</label>
+              <Select
+                value={positionTypeOptions.find(opt => opt.value === filters.position_type) || positionTypeOptions[0]}
+                onChange={(option) => handleFilterChange('position_type', option.value)}
+                options={positionTypeOptions}
+                styles={customSelectStyles}
+                className="react-select-container"
+                classNamePrefix="react-select"
+                menuPortalTarget={document.body}
+                menuPosition="fixed"
+                menuPlacement="auto"
+              />
+            </div>
+            <div className="form-group">
+              <label className="block text-sm font-medium text-gray-600 mb-1.5">Filter by Symbols</label>
+              <Select
+                isMulti
+                value={selectedSymbols}
+                onChange={setSelectedSymbols}
+                options={availableSymbols}
+                placeholder="Select symbols..."
+                styles={customSelectStyles}
+                isSearchable
+                isClearable
+                className="react-select-container"
+                classNamePrefix="react-select"
+                menuPortalTarget={document.body}
+                menuPosition="fixed"
+                menuPlacement="auto"
+                noOptionsMessage={() => "No symbols available"}
+              />
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex flex-wrap items-end justify-end gap-2">
+            <button
+              onClick={fetchData}
+              className="auth-button flex items-center justify-center gap-2 px-4 py-2 min-h-[44px]"
+            >
+              <i className="fas fa-filter" />
+              <span>Apply Filters</span>
+            </button>
+            <button
+              onClick={() => {
+                setFilters({ start_date: '', end_date: '', position_type: '', page: 1 });
+                setSelectedSymbols([]);
+              }}
+              className="auth-button flex items-center justify-center gap-2 px-4 py-2 min-h-[44px] bg-gray-600 hover:bg-gray-700"
+            >
+              <i className="fas fa-times" />
+              <span>Clear Filters</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Data Table */}
+      <div className="data-container">
+        <div className="table-header">
+          <h3>EOD Receive Data ({formatNumber(pagination.total, 0)} records)</h3>
+        </div>
+        
+        {data.length === 0 ? (
+          <div className="no-data-message">
+            No EOD receive data found for the selected filters.
+          </div>
+        ) : (
+          <div className="table-responsive">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Total Buy</th>
+                  <th>Total Sell</th>
+                  <th>Avg Buy Price</th>
+                  <th>Avg Sell Price</th>
+                  <th>Net Position</th>
+                  <th>Position Type</th>
+                  <th>Date</th>
+                  <th>Created At</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((row, index) => (
+                  <tr key={row.id || index}>
+                    <td className="font-semibold text-blue-600">
+                      {row.symbolref}
+                    </td>
+                    <td className="text-right font-mono">
+                      <span className="text-green-600 font-semibold">
+                        {formatNumber(row.total_buy)}
+                      </span>
+                    </td>
+                    <td className="text-right font-mono">
+                      <span className="text-red-600 font-semibold">
+                        {formatNumber(row.total_sell)}
+                      </span>
+                    </td>
+                    <td className="text-right font-mono">
+                      {formatNumber(row.avg_buy_price)}
+                    </td>
+                    <td className="text-right font-mono">
+                      {formatNumber(row.avg_sell_price)}
+                    </td>
+                    <td className="text-right font-mono">
+                      <span className={row.net_position >= 0 ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>
+                        {formatNumber(row.net_position)}
+                      </span>
+                    </td>
+                    <td className="text-center">
+                      <span className={getPositionClass(row.position_type)}>
+                        {row.position_type?.toUpperCase() || 'N/A'}
+                      </span>
+                    </td>
+                    <td className="font-mono">
+                      {formatDate(row.date)}
+                    </td>
+                    <td className="font-mono text-sm text-gray-600">
+                      {new Date(row.created_at).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Pagination */}
+        {pagination.totalPages > 1 && (
+          <ModernPagination
+            currentPage={pagination.page}
+            totalPages={pagination.totalPages}
+            onPageChange={handlePageChange}
+            showPageInfo={true}
+            totalRecords={pagination.total}
+            recordsPerPage={pagination.limit}
+          />
+        )}
+
+        {/* Summary Stats */}
+        {data.length > 0 && (
+          <div className="mt-6 p-4 bg-gray-50 rounded-lg">
+            <h4 className="font-semibold mb-3">Summary</h4>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+              <div>
+                <span className="text-gray-600">Total Records:</span>
+                <span className="ml-2 font-semibold">{formatNumber(pagination.total, 0)}</span>
+              </div>
+              <div>
+                <span className="text-gray-600">Total Buy Volume:</span>
+                <span className="ml-2 font-semibold text-green-600">
+                  {formatNumber(data.reduce((sum, row) => sum + (row.total_buy || 0), 0), 2)}
+                </span>
+              </div>
+              <div>
+                <span className="text-gray-600">Total Sell Volume:</span>
+                <span className="ml-2 font-semibold text-red-600">
+                  {formatNumber(data.reduce((sum, row) => sum + (row.total_sell || 0), 0), 2)}
+                </span>
+              </div>
+              <div>
+                <span className="text-gray-600">Net Position:</span>
+                <span className={`ml-2 font-semibold ${data.reduce((sum, row) => sum + (row.net_position || 0), 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  {formatNumber(data.reduce((sum, row) => sum + (row.net_position || 0), 0), 2)}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default EodReceivePage;

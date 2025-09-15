@@ -55,20 +55,21 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
     const expBalance = expData[row.symbol_ref]?.balance || 0;
     const expEquity = expData[row.symbol_ref]?.equity || 0;
     const expFloating = expData[row.symbol_ref]?.floating || 0;
+    const expProfitLossLast = expData[row.symbol_ref]?.total_exp_profit_loss_last || 0;
 
     // Explicitly query previous day's exp_floating for this symbol
-    let yesterdayExpFloating = 0;
-    if (row.trade_date && row.symbol_ref) {
-      const yesterday = new Date(row.trade_date);
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yesterdayStr = yesterday.toISOString().split('T')[0];
-      if (yesterdayBalances.exp[row.symbol_ref + '_' + yesterdayStr]) {
-        yesterdayExpFloating = yesterdayBalances.exp[row.symbol_ref + '_' + yesterdayStr];
-      } else if (yesterdayBalances.exp[row.symbol_ref]?.floating) {
-        yesterdayExpFloating = yesterdayBalances.exp[row.symbol_ref].floating;
-      }
+  let yesterdayExpProfitLossLast = 0;
+  if (row.trade_date && row.symbol_ref) {
+    const yesterday = new Date(row.trade_date);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().split('T')[0];
+    if (yesterdayBalances.exp[row.symbol_ref + '_' + yesterdayStr]) {
+      yesterdayExpProfitLossLast = yesterdayBalances.exp[row.symbol_ref + '_' + yesterdayStr];
+    } else if (yesterdayBalances.exp[row.symbol_ref]?.profit_loss_last) {
+      yesterdayExpProfitLossLast = yesterdayBalances.exp[row.symbol_ref].profit_loss_last;
     }
-    const expPln = expFloating - yesterdayExpFloating - deposit + withdrawal;
+  }
+    const expPln = expProfitLossLast - yesterdayExpProfitLossLast - deposit + withdrawal;
 
     // Calculate realized and unrealized P&L
     let companyRealized = 0;
@@ -149,6 +150,7 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
       exp_balance: Math.round(expBalance * 100) / 100,
       exp_equity: Math.round(expEquity * 100) / 100,
       exp_floating: Math.round(expFloating * 100) / 100,
+      exp_profit_loss_last: Math.round(expProfitLossLast * 100) / 100, 
       exp_pln: Math.round(expPln * 100) / 100,
       exp_realized: Math.round(expRealized * 100) / 100,
       exp_unrealized: Math.round(expUnrealized * 100) / 100,
@@ -173,54 +175,56 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
     return result;
   }
 
-  // Helper function to get Exp data for a single date
-  async function getExpDataForDate(conn, date, symbolList) {
-    const expData = {};
-    
-    // Build symbol filter clause
-    let symbolFilterClause = '';
-    if (symbolList && symbolList.length > 0) {
-      symbolFilterClause = `AND su.symbol_ref IN (${symbolList.map(s => `'${s.trim()}'`).join(',')})`;
-    }
-    
-    const sql = `
+async function getExpDataForDate(conn, date, symbolList) {
+  const expData = {};
+  
+  // Build symbol filter clause
+  let symbolFilterClause = '';
+  if (symbolList && symbolList.length > 0) {
+    symbolFilterClause = `AND su.symbol_ref IN (${symbolList.map(s => `'${s.trim()}'`).join(',')})`;
+  }
+  
+  const sql = `
+    SELECT 
+      su.symbol_ref,
+      SUM(COALESCE(cd.balance, 0)) as total_exp_balance,
+      SUM(COALESCE(cd.equity, 0)) as total_exp_equity,
+      SUM(COALESCE(cd.floating, 0)) as total_exp_floating,
+      SUM(COALESCE(cd.profit_loss_last, 0)) as total_exp_profit_loss_last,
+      SUM(COALESCE(cd.profit_loss, 0) + COALESCE(cd.profit_loss_last, 0)) as total_exp_pln
+    FROM sub_users su
+    LEFT JOIN (
       SELECT 
-        su.symbol_ref,
-        SUM(COALESCE(cd.balance, 0)) as total_exp_balance,
-        SUM(COALESCE(cd.equity, 0)) as total_exp_equity,
-        SUM(COALESCE(cd.floating, 0)) as total_exp_floating,
-        SUM(COALESCE(cd.profit_loss, 0) + COALESCE(cd.profit_loss_last, 0)) as total_exp_pln
-      FROM sub_users su
-      LEFT JOIN (
-        SELECT 
-          mt5,
-          balance,
-          equity,
-          floating,
-          profit_loss,
-          profit_loss_last,
-          ROW_NUMBER() OVER (PARTITION BY mt5 ORDER BY created_at DESC) as rn
-        FROM customer_data
-        WHERE DATE(created_at) <= ?
-      ) cd ON su.sub_username = cd.mt5 AND cd.rn = 1
-      WHERE su.symbol_ref IS NOT NULL AND su.symbol_ref != ''
-      ${symbolFilterClause}
-      GROUP BY su.symbol_ref
-    `;
-
-    const result = await conn.query(sql, [date]);
-    
-    for (const row of result) {
+        mt5,
+        balance,
+        equity,
+        floating,
+        profit_loss,
+        profit_loss_last,
+        ROW_NUMBER() OVER (PARTITION BY mt5 ORDER BY created_at DESC) as rn
+      FROM customer_data
+      WHERE DATE(created_at) <= ?
+    ) cd ON su.sub_username = cd.mt5 AND cd.rn = 1
+    WHERE su.status = 'active' ${symbolFilterClause}
+    GROUP BY su.symbol_ref
+  `;
+  
+  const result = await conn.query(sql, [date]);
+  
+  for (const row of result) {
+    if (row.symbol_ref) {
       expData[row.symbol_ref] = {
-        balance: parseFloat(row.total_exp_balance) || 0,
-        equity: parseFloat(row.total_exp_equity) || 0,
-        floating: parseFloat(row.total_exp_floating) || 0,
-        pln: parseFloat(row.total_exp_pln) || 0
+        total_exp_balance: parseFloat(row.total_exp_balance) || 0,
+        total_exp_equity: parseFloat(row.total_exp_equity) || 0,
+        total_exp_floating: parseFloat(row.total_exp_floating) || 0,
+        total_exp_profit_loss_last: parseFloat(row.total_exp_profit_loss_last) || 0,
+        total_exp_pln: parseFloat(row.total_exp_pln) || 0
       };
     }
-
-    return expData;
   }
+  
+  return expData;
+}
 
   // Helper function to get yesterday's balances for a single date
   async function getYesterdayBalancesForDate(conn, date, symbolList) {
@@ -295,14 +299,16 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
       : '';
       
     const sqlExp = `
-      SELECT 
+    SELECT 
         su.symbol_ref,
-        SUM(COALESCE(cd.balance, 0)) as total_exp_balance
+        SUM(COALESCE(cd.balance, 0)) as total_exp_balance,
+        SUM(COALESCE(cd.profit_loss_last, 0)) as total_exp_profit_loss_last
       FROM sub_users su
       LEFT JOIN (
         SELECT 
           mt5,
           balance,
+          profit_loss_last,
           ROW_NUMBER() OVER (PARTITION BY mt5 ORDER BY created_at DESC) as rn
         FROM customer_data
         WHERE DATE(created_at) <= ?
@@ -314,10 +320,14 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
 
     const expResult = await conn.query(sqlExp, [yesterdayStr]);
     
-    for (const row of expResult) {
-      yesterdayBalances.exp[row.symbol_ref] = parseFloat(row.total_exp_balance) || 0;
-    }
-
+for (const row of expResult) {
+  yesterdayBalances.exp[row.symbol_ref] = {
+    balance: parseFloat(row.total_exp_balance) || 0,
+    profit_loss_last: parseFloat(row.total_exp_profit_loss_last) || 0
+  };
+  // Also store with date suffix for specific lookups
+  yesterdayBalances.exp[row.symbol_ref + '_' + yesterdayStr] = parseFloat(row.total_exp_profit_loss_last) || 0;
+}
     return yesterdayBalances;
   }
   // Get years
@@ -671,20 +681,20 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
     
     // Insert today's data
     for (const processed of processedData) {
-      const insertSql = `
-        INSERT INTO pl_report_daily (
-          trade_date, symbol_ref, year, month,
-          mktprice, buysize1, sellsize1, buysize2, sellsize2,
-          buyprice1, sellprice1, buyprice2, sellprice2,
-          company_balance, company_equity, company_floating, company_pln,
-          company_deposit, company_withdrawal,
-          company_realized, company_unrealized,
-          exp_balance, exp_equity, exp_floating, exp_pln,
-          exp_realized, exp_unrealized,
-          accn_pf, daily_company_total, daily_exp_total, daily_grand_total,
-          is_finalized
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `;
+const insertSql = `
+  INSERT INTO pl_report_daily (
+    trade_date, symbol_ref, year, month,
+    mktprice, buysize1, sellsize1, buysize2, sellsize2,
+    buyprice1, sellprice1, buyprice2, sellprice2,
+    company_balance, company_equity, company_floating, company_pln,
+    company_deposit, company_withdrawal,
+    company_realized, company_unrealized,
+    exp_balance, exp_equity, exp_floating, exp_profit_loss_last, exp_pln,
+    exp_realized, exp_unrealized,
+    accn_pf, daily_company_total, daily_exp_total, daily_grand_total,
+    is_finalized
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
       
       await conn.query(insertSql, [
         processed.trade_date,
@@ -711,6 +721,7 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
         processed.exp_balance,
         processed.exp_equity,
         processed.exp_floating,
+        processed.exp_profit_loss_last,
         processed.exp_pln,
         processed.exp_realized,
         processed.exp_unrealized,
@@ -971,45 +982,46 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelp
     }
     
     // Get data
-    const dataSql = `
-      SELECT 
-        trade_date,
-        symbol_ref,
-        mktprice as latest_mktprice,
-        buysize1 as latest_buysize1,
-        sellsize1 as latest_sellsize1,
-        buysize2 as latest_buysize2,
-        sellsize2 as latest_sellsize2,
-        buyprice1,
-        sellprice1,
-        buyprice2,
-        sellprice2,
-        company_balance,
-        company_equity,
-        company_floating,
-        company_pln,
-        company_deposit,
-        company_withdrawal,
-        company_realized,
-        company_unrealized,
-        exp_balance,
-        exp_equity,
-        exp_floating,
-        exp_pln,
-        exp_realized,
-        exp_unrealized,
-        accn_pf,
-        daily_company_total,
-        daily_exp_total,
-        daily_grand_total,
-        company_balance as company_balance_raw,
-        company_equity as company_equity_raw,
-        company_floating as company_floating_raw
-      FROM pl_report_daily 
-      WHERE year = ? AND month = ? ${symbolFilter} ${dateFilter}
-      ORDER BY trade_date DESC, symbol_ref ASC
-      LIMIT ? OFFSET ?
-    `;
+const dataSql = `
+  SELECT 
+    trade_date,
+    symbol_ref,
+    mktprice as latest_mktprice,
+    buysize1 as latest_buysize1,
+    sellsize1 as latest_sellsize1,
+    buysize2 as latest_buysize2,
+    sellsize2 as latest_sellsize2,
+    buyprice1,
+    sellprice1,
+    buyprice2,
+    sellprice2,
+    company_balance,
+    company_equity,
+    company_floating,
+    company_pln,
+    company_deposit,
+    company_withdrawal,
+    company_realized,
+    company_unrealized,
+    exp_balance,
+    exp_equity,
+    exp_floating,
+    exp_profit_loss_last,
+    exp_pln,
+    exp_realized,
+    exp_unrealized,
+    accn_pf,
+    daily_company_total,
+    daily_exp_total,
+    daily_grand_total,
+    company_balance as company_balance_raw,
+    company_equity as company_equity_raw,
+    company_floating as company_floating_raw
+  FROM pl_report_daily 
+  WHERE year = ? AND month = ? ${symbolFilter} ${dateFilter}
+  ORDER BY trade_date DESC, symbol_ref ASC
+  LIMIT ? OFFSET ?
+`;
     
     const data = await conn.query(dataSql, [year, month, limit, offset]);
     

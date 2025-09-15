@@ -553,7 +553,7 @@ async function initializeTables() {
 initializeTables();
 
 // Import route handlers with error handling
-let auth, rawData, report, comments, plReport, customerData, symbolNames, getsymbols, customerTrading, grids;
+let auth, rawData, report, comments, plReport, customerData, symbolNames, getsymbols, customerTrading, grids, eodReceive, eodCustomerData;
 
 const dbHelpers = { getDbConnection, executeQuery, executeTransaction, getPoolStats };
 
@@ -611,11 +611,26 @@ try {
   // Load grids route (for grids data API)
   grids = require('./routes/grids')(pool, { authenticateToken, getAllowedSymbols }, dbHelpers);
   
+  
   console.log('✓ SymbolNames routes loaded');
 } catch (error) {
   console.error('✗ Error loading symbolNames routes:', error.message);
 }
 
+
+try {
+  eodReceive = require('./routes/eodReceive')(pool, { authenticateToken, getAllowedSymbols }, dbHelpers);
+  console.log('✓ EOD Receive routes loaded');
+} catch (error) {
+  console.error('✗ Error loading EOD Receive routes:', error.message);
+}
+
+try {
+  eodCustomerData = require('./routes/eodCustomerData')(pool, { authenticateToken, getAllowedSymbols }, dbHelpers);
+  console.log('✓ EOD Customer Data routes loaded');
+} catch (error) {
+  console.error('✗ Error loading EOD Customer Data routes:', error.message);
+}
 // Mount routes (more specific routes first to prevent conflicts)
 try {
   if (auth && auth.router) {
@@ -777,6 +792,8 @@ try {
   console.error('✗ Error mounting customerTrading routes:', error.message);
 }
 
+
+
 // Mount grids routes
 try {
   if (grids && grids.router) {
@@ -787,6 +804,24 @@ try {
   console.error('✗ Error mounting grids routes:', error.message);
 }
 
+
+try {
+  if (eodReceive && eodReceive.router) {
+    app.use('/api/eod-receive', eodReceive.router);
+    console.log('✓ EOD Receive routes mounted at /api/eod-receive');
+  }
+} catch (error) {
+  console.error('✗ Error mounting EOD Receive routes:', error.message);
+}
+
+try {
+  if (eodCustomerData && eodCustomerData.router) {
+    app.use('/api/eod-customer-data', eodCustomerData.router);
+    console.log('✓ EOD Customer Data routes mounted at /api/eod-customer-data');
+  }
+} catch (error) {
+  console.error('✗ Error mounting EOD Customer Data routes:', error.message);
+}
 // Health check
 app.get('/api/health', (req, res) => {
   const poolStats = logPoolStats();

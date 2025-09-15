@@ -78,7 +78,19 @@ const Layout = ({ children }) => {
           label: 'Grids',
           icon: 'fas fa-th',
           description: 'Grid Order Data API'
-        }
+        },
+         {
+      path: '/eod-receive',
+      label: 'EOD-Receive',
+      icon: 'fas fa-calendar-check',
+      description: 'End-of-Day Receive Data API'
+    },
+    {
+      path: '/eod-customer-data',
+      label: 'EOD-CustomerData',
+      icon: 'fas fa-user-clock',
+      description: 'End-of-Day Customer Data API'
+    }
       ]
     };
 

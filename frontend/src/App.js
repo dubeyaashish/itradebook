@@ -20,6 +20,8 @@ import PLReportPage from './pages/PLReportPage';
 import GetSymbolsPage from './pages/GetSymbolsPage';
 import CustomerTradingPage from './pages/CustomerTradingPage';
 import GridsPage from './pages/GridsPage';
+import EodReceivePage from './pages/EodReceivePage';
+import EodCustomerDataPage from './pages/EodCustomerDataPage';
 
 import './App.css';
 
@@ -413,6 +415,22 @@ const App = () => {
             element={
               <ProtectedRoute>
                 <GridsPage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/eod-receive" 
+            element={
+              <ProtectedRoute>
+                <EodReceivePage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/eod-customer-data" 
+            element={
+              <ProtectedRoute>
+                <EodCustomerDataPage />
               </ProtectedRoute>
             } 
           />
