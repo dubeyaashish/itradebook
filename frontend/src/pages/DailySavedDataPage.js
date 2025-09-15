@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import axios from 'axios';
-import io from 'socket.io-client';
+// websockets replaced by polling
 import {
   useQuery,
   useQueries,
@@ -62,17 +62,50 @@ const formatNumber = (value, digits = 4) => {
   });
 };
 
+const ISO_RE = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
 const formatDate = (dateString) => {
-  if (!dateString) return '';
+  if (!dateString && dateString !== 0) return '';
   try {
-    return new Date(dateString).toLocaleString('en-US', {
+    let d;
+
+    // If it's already a Date
+    if (dateString instanceof Date) {
+      d = dateString;
+    }
+
+    // If looks like ISO8601, parse directly (avoid treating as unix seconds)
+    else if (typeof dateString === 'string' && ISO_RE.test(dateString)) {
+      d = new Date(dateString);
+    }
+
+    // Numeric values (number or numeric-string) - detect seconds vs ms
+    else if (typeof dateString === 'number' || /^\d+$/.test(String(dateString))) {
+      const n = Number(dateString);
+      // Heuristic: values <= 1e10 are seconds, >1e10 are milliseconds
+      if (n <= 1e10) {
+        d = new Date(n * 1000);
+      } else {
+        d = new Date(n);
+      }
+    } else {
+      // Fallback - let Date try to parse
+      d = new Date(dateString);
+    }
+
+    if (Number.isNaN(d.getTime())) return String(dateString);
+
+    // Include year to avoid ambiguity in logs like "Jan 21, 1970, 15:18:30"
+    return d.toLocaleString('en-US', {
       month: 'short',
       day: 'numeric',
+      year: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
     });
   } catch {
-    return dateString;
+    return String(dateString);
   }
 };
 
@@ -99,61 +132,71 @@ const useAllSymbolComments = (symbolRefs, userId) => {
   });
 };
 
-const useLiveData = (userId) => {  // Remove autoRefresh param
+const useLiveData = (userId) => {
   const [lastTimestamps, setLastTimestamps] = useState({});
+  const lastTimestampsRef = React.useRef({});
   
   const fetchLiveData = useCallback(async () => {
     try {
+      console.log('🔄 Fetching live data...');
       const newData = await api.liveData.fetch();
+      console.log('✅ Got live data:', newData?.length || 0, 'records');
+      
+      const processedData = Array.isArray(newData) ? newData : (newData?.rows || []);
 
-      // Backend already returns second latest for each symbol, use directly
-      const processedData = newData;
-
-      // Update timestamps for change detection
+      // Compute new timestamps map
       const newTimestamps = processedData.reduce((acc, item) => {
         acc[item.symbol_ref] = item.timestamp;
         return acc;
       }, {});
 
-      setLastTimestamps((prev) => {
-        const changed = Object.keys(newTimestamps).filter(
-          (symbol) => newTimestamps[symbol] !== prev[symbol]
-        );
-        if (changed.length > 0) {
-          safeConsole.log('Data updated for symbols:', changed);
-        }
-        return newTimestamps;
-      });
+      // Detect changed symbols compared to last known timestamps (use Set for stable boolean checks)
+      const prev = lastTimestampsRef.current || {};
+      const changedArray = Object.keys(newTimestamps).filter((symbol) => newTimestamps[symbol] !== prev[symbol]);
+      const changedSet = new Set(changedArray);
+      if (changedArray.length > 0) {
+        console.log('📊 Data updated for symbols:', changedArray);
+      }
 
-      return processedData;
+      // Update refs/state
+      lastTimestampsRef.current = newTimestamps;
+      setLastTimestamps(newTimestamps);
+
+      // Mark items as updated when their timestamp changed so React sees new objects and re-renders
+      const annotated = processedData.map((item) => ({
+        ...item,
+        // Ensure isUpdated is always a boolean (true when changed, false otherwise)
+        isUpdated: Boolean(changedSet.has(item.symbol_ref)),
+      }));
+
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('🧾 useLiveData annotated sample:', annotated.slice(0, 6));
+      }
+
+      return annotated;
     } catch (error) {
-      // Silent error handling
+      console.error('❌ Error fetching live data:', error);
       throw error;
     }
   }, []);
 
   const query = useQuery({
-    queryKey: ['liveData', userId], // Include userId in cache key
+    queryKey: ['liveData', userId],
     queryFn: fetchLiveData,
-    // WebSocket only - no polling
-    refetchInterval: false, // Remove polling completely
-    staleTime: Infinity,    // Data is fresh until WebSocket says otherwise
-    gcTime: GC_TIME,
+    // Disable react-query internal polling - we control polling via refreshData to avoid races
+    refetchInterval: false,
+    staleTime: 0, // Never consider data fresh - always refetch
+    gcTime: 30000, // Keep in cache for 30 seconds
     placeholderData: (prev) => prev,
-    enabled: !!userId, // Only fetch if user is logged in
-    refetchOnWindowFocus: false, // Don't refetch on window focus
-    refetchOnReconnect: true, // Do refetch when internet connection restored
-    select: useCallback((data) => {
-      return data?.map((item) => ({
-        ...item,
-        isUpdated: lastTimestamps[item.symbol_ref] !== item.timestamp,
-      })) || [];
-    }, [lastTimestamps]),
+    enabled: !!userId,
+    refetchOnMount: true,
+    refetchOnWindowFocus: false,
+    retry: 1,
   });
 
   return query;
 };
-
 // Custom Symbol Name component
 const CustomSymbolName = React.memo(({ symbolRef, customName, onSave, onDelete, isEditing, setIsEditing }) => {
   const [tempName, setTempName] = useState(customName || '');
@@ -413,6 +456,33 @@ const TradingCard = React.memo(({
   const profitRatio = Number(item.profit_ratio || 0);
   const isProfit = profitRatio >= 0;
   const [isEditingName, setIsEditingName] = useState(false);
+  // Normalize timestamp for display: prefer `item.timestamp`, fall back to `item.date`.
+  // Convert numeric-strings (e.g. '1757911190') to Number so `formatDate` heuristics work predictably.
+  const rawTs = item.timestamp ?? item.date;
+  let displayTimestamp = rawTs;
+  if (typeof rawTs === 'string' && /^\d+$/.test(rawTs)) {
+    displayTimestamp = Number(rawTs);
+  }
+  // Local state to ensure DOM updates when timestamp changes
+  const [displayTsState, setDisplayTsState] = useState(displayTimestamp);
+
+  useEffect(() => {
+    if (displayTimestamp !== displayTsState) {
+      setDisplayTsState(displayTimestamp);
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('➡️ TradingCard local timestamp updated for', item.symbol_ref, '->', displayTimestamp);
+      }
+    }
+  }, [displayTimestamp, displayTsState, item.symbol_ref]);
+  // Debug render: log when a card renders (only in development)
+  if (process.env.NODE_ENV !== 'production') {
+    // eslint-disable-next-line no-console
+    if (typeof item.isUpdated === 'undefined') {
+      console.log('⚠️ TradingCard missing isUpdated for', item.symbol_ref, 'typeof=', typeof item.isUpdated, 'item=', item);
+    }
+    console.log('🔁 Rendering TradingCard for', item.symbol_ref, 'isUpdated=', Boolean(item.isUpdated), 'timestamp=', displayTsState);
+  }
 
   return (
     <div 
@@ -439,7 +509,8 @@ const TradingCard = React.memo(({
                 isEditing={isEditingName}
                 setIsEditing={setIsEditingName}
               />
-              <p className="symbol-date">{formatDate(item.date)}</p>
+              {/* Prefer live numeric timestamp when available so UI updates on polling */}
+              <p className="symbol-date">{formatDate(displayTsState)}</p>
             </div>
           </div>
           <div className="profit-display">
@@ -623,62 +694,111 @@ const DailySavedDataPage = () => {
   const [errorMessage, setError] = useState('');
   const [currentUserId, setCurrentUserId] = useState(user?.id);
 
-  // WebSocket for real-time invalidation (simple heartbeat approach)
+  const refreshData = useCallback(async () => {
+    try {
+      console.log('🔁 refreshData called - fetching fresh live data for user', user?.id);
+      if (!user?.id) {
+        console.warn('refreshData skipped - no user id');
+        return;
+      }
+
+      // Fetch raw live data directly from API
+      const raw = await api.liveData.fetch();
+      const processedData = Array.isArray(raw) ? raw : (raw?.rows || []);
+
+      // Build new timestamps map from fresh data
+      const newTimestamps = processedData.reduce((acc, item) => {
+        acc[item.symbol_ref] = item.timestamp;
+        return acc;
+      }, {});
+
+      // Read previous cached data to compute changed symbols
+      const prevCached = queryClient.getQueryData(['liveData', user?.id]) || [];
+      const prevArray = Array.isArray(prevCached) ? prevCached : (prevCached?.rows || []);
+      const prevTimestamps = prevArray.reduce((acc, item) => {
+        if (item && item.symbol_ref) acc[item.symbol_ref] = item.timestamp;
+        return acc;
+      }, {});
+
+      const changedArray = Object.keys(newTimestamps).filter((s) => newTimestamps[s] !== prevTimestamps[s]);
+      const changedSet = new Set(changedArray);
+      if (changedArray.length > 0) {
+        console.log('📊 refreshData detected changes for symbols:', changedArray);
+      }
+
+      // Annotate items and update cache atomically
+      const annotated = processedData.map((item) => ({
+        ...item,
+        isUpdated: Boolean(changedSet.has(item.symbol_ref)),
+      }));
+
+      // Write annotated array into react-query cache for the liveData key
+      queryClient.setQueryData(['liveData', user?.id], annotated);
+
+      if (process.env.NODE_ENV !== 'production') {
+        // eslint-disable-next-line no-console
+        console.log('🧾 refreshData annotated sample (written to cache):', annotated.slice(0, 6));
+      }
+    } catch (err) {
+      console.error('Error in refreshData fetch/set cache', err);
+    }
+  }, [queryClient, user?.id]);
+
   useEffect(() => {
     if (!user?.id) return;
-    
-    const apiURL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
-    const socket = io(apiURL, {
-      withCredentials: true,
-      transports: ['websocket', 'polling'],
-      timeout: 2000,
-      forceNew: true
-    });
-    
-    socket.on('connect', () => {
-      console.log('🔌 WebSocket connected (change detection mode)');
-    });
-    
-    socket.on('connect_error', (error) => {
-      console.log('🔌 WebSocket connection error:', error);
-    });
-    
-    socket.on('disconnect', () => {
-      console.log('🔌 WebSocket disconnected');
-    });
-    
-    // Listen for actual data changes and refresh immediately
-    socket.on('data_changed', (data) => {
-      console.log('📡 Heartbeat received - refreshing data');
-      queryClient.invalidateQueries({ queryKey: ['liveData'] });
+
+    // Polling interval (ms) - configurable via env or fallback to 3000ms
+    const POLL_INTERVAL = Number(process.env.REACT_APP_POLL_INTERVAL_MS) || 3000;
+
+    let timer = null;
+
+    const startPolling = () => {
+      // Run an immediate refresh then schedule
+      try {
+      console.log('▶️ starting polling loop, interval:', POLL_INTERVAL);
+      refreshData();
       setLastUpdated(new Date());
-    });
+      } catch (err) {
+        // swallow - refreshData triggers react-query invalidation
+      }
+
+      timer = setInterval(() => {
+        if (!autoRefresh) return;
+        try {
+        console.log('⏱ polling tick - calling refreshData');
+        refreshData();
+        setLastUpdated(new Date());
+        } catch (err) {
+          // ignore polling errors here
+        }
+      }, POLL_INTERVAL);
+    };
+
+    startPolling();
 
     return () => {
-      socket.disconnect();
+      if (timer) clearInterval(timer);
     };
-  }, [user?.id, queryClient]);
+  }, [user?.id, queryClient, autoRefresh, refreshData]);
 
-  // Clear cache when user changes (but preserve shared data when switching between regular users)
-  useEffect(() => {
-    if (user?.id !== currentUserId) {
-      // Clear all live data and comments as they are user-specific
-      queryClient.removeQueries({ queryKey: ['liveData'] });
-      queryClient.removeQueries({ queryKey: ['comments'] });
-      
-      // Only clear symbol names if switching between different user types
-      // (preserve shared names when switching between regular users)
-      const previousUserType = currentUserId ? 'unknown' : null; // We don't store previous user type, so clear to be safe
-      if (previousUserType !== user?.user_type) {
-        queryClient.removeQueries({ queryKey: ['symbolNames'] });
-      }
-      
-      setCurrentUserId(user?.id);
+useEffect(() => {
+  if (user?.id !== currentUserId) {
+    // Clear all live data and comments as they are user-specific
+    queryClient.removeQueries({ queryKey: ['liveData', currentUserId] });
+    queryClient.removeQueries({ queryKey: ['comments'] });
+    
+    // Only clear symbol names if switching between different user types
+    const previousUserType = currentUserId ? 'unknown' : null;
+    if (previousUserType !== user?.user_type) {
+      queryClient.removeQueries({ queryKey: ['symbolNames'] });
     }
-  }, [user?.id, currentUserId, queryClient]);
+    
+    setCurrentUserId(user?.id);
+  }
+}, [user?.id, currentUserId, queryClient]);
 
   // Data fetching with user-specific cache keys
-  const { data, isLoading: loading, error } = useLiveData(user?.id);
+  const { data, isLoading: loading, error, refetch } = useLiveData(user?.id);
 
   // Normalize live data to an array
   const list = useMemo(() => {
@@ -686,6 +806,14 @@ const DailySavedDataPage = () => {
     if (data && Array.isArray(data.rows)) return data.rows;
     return [];
   }, [data]);
+
+  // Debug: log a sample of the list to ensure items are annotated as expected
+  useEffect(() => {
+    if (list.length > 0 && process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.log('🧾 DailySavedDataPage list sample:', list.slice(0, 3));
+    }
+  }, [list]);
 
   // Fetch comments for all symbols
   const symbolRefs = useMemo(() => list.map((item) => item.symbol_ref), [list]);
@@ -822,10 +950,6 @@ const DailySavedDataPage = () => {
   const handleDeleteCustomName = useCallback((symbolRef) => {
     deleteCustomNameMutation.mutate(symbolRef);
   }, [deleteCustomNameMutation]);
-
-  const refreshData = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ['liveData', user?.id] });
-  }, [queryClient, user?.id]);
 
   // Effects
   useEffect(() => {
@@ -1840,21 +1964,26 @@ const DailySavedDataPage = () => {
             </div>
           </div>
         ) : (
-          list.map((item) => (
-            <TradingCard
-              key={item.symbol_ref}
-              item={item}
-              comments={commentsMap[item.symbol_ref] || []}
-              onAddComment={handleAddComment}
-              onDeleteComment={handleDeleteComment}
-              isAddingComment={addCommentMutation.isLoading}
-              isDeletingComment={deleteCommentMutation.isLoading}
-              customName={customNamesData[item.symbol_ref]}
-              onSaveCustomName={handleSaveCustomName}
-              onDeleteCustomName={handleDeleteCustomName}
-              isSavingCustomName={saveCustomNameMutation.isLoading}
-            />
-          ))
+          list.map((item) => {
+            // Defensive normalization: ensure isUpdated is always a boolean and key uses stringified timestamp
+            const keyTs = String(item.timestamp ?? item.date ?? '');
+            const safeItem = { ...item, isUpdated: Boolean(item.isUpdated) };
+            return (
+              <TradingCard
+                key={`${item.symbol_ref}-${keyTs}`}
+                item={safeItem}
+                comments={commentsMap[item.symbol_ref] || []}
+                onAddComment={handleAddComment}
+                onDeleteComment={handleDeleteComment}
+                isAddingComment={addCommentMutation.isLoading}
+                isDeletingComment={deleteCommentMutation.isLoading}
+                customName={customNamesData[item.symbol_ref]}
+                onSaveCustomName={handleSaveCustomName}
+                onDeleteCustomName={handleDeleteCustomName}
+                isSavingCustomName={saveCustomNameMutation.isLoading}
+              />
+            );
+          })
         )}
       </div>
     </div>
