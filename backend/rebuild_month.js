@@ -114,7 +114,7 @@ async function storeDataForDate(conn, dateStr, year, month) {
         buyprice1, sellprice1, buyprice2, sellprice2,
         company_balance, company_equity, company_floating, company_pln,
         company_realized, company_unrealized,
-        exp_balance, exp_equity, exp_floating, exp_pln,
+        exp_balance, exp_equity, exp_floating, exp_profit_loss, exp_pln,
         exp_realized, exp_unrealized,
         accn_pf, daily_company_total, daily_exp_total, daily_grand_total,
         is_finalized
@@ -144,6 +144,7 @@ async function storeDataForDate(conn, dateStr, year, month) {
       processed.exp_balance,
       processed.exp_equity,
       processed.exp_floating,
+      processed.exp_profit_loss,
       processed.exp_pln,
       processed.exp_realized,
       processed.exp_unrealized,
@@ -157,6 +158,7 @@ async function storeDataForDate(conn, dateStr, year, month) {
 }
 
 // Helper functions (simplified versions)
+// Updated function in backend/rebuild_month.js
 async function getExpDataForDate(conn, date) {
   const expData = {};
   
@@ -166,7 +168,7 @@ async function getExpDataForDate(conn, date) {
       SUM(COALESCE(cd.balance, 0)) as total_exp_balance,
       SUM(COALESCE(cd.equity, 0)) as total_exp_equity,
       SUM(COALESCE(cd.floating, 0)) as total_exp_floating,
-      SUM(COALESCE(cd.profit_loss, 0) + COALESCE(cd.profit_loss_last, 0)) as total_exp_pln
+      SUM(COALESCE(cd.profit_loss, 0)) as total_exp_pln
     FROM sub_users su
     LEFT JOIN (
       SELECT 
@@ -175,7 +177,6 @@ async function getExpDataForDate(conn, date) {
         equity,
         floating,
         profit_loss,
-        profit_loss_last,
         ROW_NUMBER() OVER (PARTITION BY mt5 ORDER BY created_at DESC) as rn
       FROM customer_data
       WHERE DATE(created_at) <= ?
@@ -197,7 +198,6 @@ async function getExpDataForDate(conn, date) {
 
   return expData;
 }
-
 async function getYesterdayBalancesForDate(conn, date) {
   const yesterdayBalances = {
     company: {},

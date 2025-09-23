@@ -673,12 +673,7 @@ const TradingCard = React.memo(({
         />
       </div>
 
-      {/* Action Buttons */}
-      <div className="action-buttons-container">
-        <button className="action-button" onClick={() => {}}>1</button>
-        <button className="action-button" onClick={() => {}}>2</button>
-        <button className="action-button" onClick={() => {}}>3</button>
-      </div>
+      {/* Action Buttons removed from card-level; now controlled at page header */}
     </div>
   );
 });
@@ -689,7 +684,8 @@ TradingCard.displayName = 'TradingCard';
 const DailySavedDataPage = () => {
   const queryClient = useQueryClient();
   const { user } = useAuth();
-  const [autoRefresh, setAutoRefresh] = useState(true);
+  // Live polling toggle (default off). Initial data still loads once via react-query.
+  const [autoRefresh, setAutoRefresh] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [errorMessage, setError] = useState('');
   const [currentUserId, setCurrentUserId] = useState(user?.id);
@@ -744,42 +740,29 @@ const DailySavedDataPage = () => {
     }
   }, [queryClient, user?.id]);
 
+  // Start/stop polling based on toggle. Initial data loaded by react-query separately.
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user?.id || !autoRefresh) return;
 
-    // Polling interval (ms) - configurable via env or fallback to 3000ms
     const POLL_INTERVAL = Number(process.env.REACT_APP_POLL_INTERVAL_MS) || 3000;
-
     let timer = null;
 
-    const startPolling = () => {
-      // Run an immediate refresh then schedule
+    (async () => {
       try {
-      console.log('▶️ starting polling loop, interval:', POLL_INTERVAL);
-      refreshData();
-      setLastUpdated(new Date());
-      } catch (err) {
-        // swallow - refreshData triggers react-query invalidation
-      }
-
-      timer = setInterval(() => {
-        if (!autoRefresh) return;
-        try {
-        console.log('⏱ polling tick - calling refreshData');
-        refreshData();
+        console.log('▶️ starting polling loop, interval:', POLL_INTERVAL);
+        await refreshData();
         setLastUpdated(new Date());
-        } catch (err) {
-          // ignore polling errors here
-        }
+      } catch {}
+      timer = setInterval(() => {
+        try {
+          refreshData();
+          setLastUpdated(new Date());
+        } catch {}
       }, POLL_INTERVAL);
-    };
+    })();
 
-    startPolling();
-
-    return () => {
-      if (timer) clearInterval(timer);
-    };
-  }, [user?.id, queryClient, autoRefresh, refreshData]);
+    return () => { if (timer) clearInterval(timer); };
+  }, [user?.id, autoRefresh, refreshData]);
 
 useEffect(() => {
   if (user?.id !== currentUserId) {
@@ -818,8 +801,6 @@ useEffect(() => {
   // Fetch comments for all symbols
   const symbolRefs = useMemo(() => list.map((item) => item.symbol_ref), [list]);
   const commentsQueries = useAllSymbolComments(symbolRefs, user?.id);
-
-  // Map: symbol_ref -> comments[]
   const commentsMap = useMemo(() => {
     return symbolRefs.reduce((map, ref, i) => {
       map[ref] = commentsQueries[i]?.data || [];
@@ -1946,6 +1927,19 @@ useEffect(() => {
                 day: 'numeric' 
               })}
             </p>
+          </div>
+          <div className="flex gap-2">
+            <button className="auth-button-secondary" onClick={refreshData} title="Fetch latest now">
+              <i className="fas fa-rotate-right mr-2" /> Refresh
+            </button>
+            <button
+              className="auth-button"
+              onClick={() => setAutoRefresh(v => !v)}
+              title="Toggle 3s live polling"
+            >
+              <i className={`fas ${autoRefresh ? 'fa-pause' : 'fa-play'} mr-2`} />
+              {autoRefresh ? 'Live: On' : 'Live: Off'}
+            </button>
           </div>
         </div>
       </div>

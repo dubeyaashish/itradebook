@@ -536,7 +536,7 @@ const handleBulkDelete = async (rowsToDelete) => {
                                 className="auth-button flex items-center justify-center gap-2 px-4 py-2 min-h-[44px]"
                             >
                                 <i className="fas fa-plus" />
-                                <span>Insert Record</span>
+                                <span>Insert New Record</span>
                             </button>
                             {user?.user_type === 'regular' && (
                                 <button 

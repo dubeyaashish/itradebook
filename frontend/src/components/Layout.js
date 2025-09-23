@@ -122,16 +122,29 @@ const Layout = ({ children }) => {
         description: 'Real-time Trading Cards'
       },
       {
-        path: '/raw-data',
-        label: 'Trading Data',
-        icon: 'fas fa-table',
-        description: 'Raw Data Table View'
+        path: '/alerts',
+        label: 'Alerts',
+        icon: 'fas fa-bell',
+        description: 'Per-Symbol Alert Rules'
+      },
+      // New live metric pages
+      {
+        path: '/profit-ratio',
+        label: 'Profit Ratio',
+        icon: 'fas fa-wave-square',
+        description: 'Live Profit Ratio per Symbol'
       },
       {
-        path: '/pl-report',
-        label: 'P&L Report',
-        icon: 'fas fa-chart-bar',
-        description: 'Profit & Loss Analysis'
+        path: '/diff-lot',
+        label: 'Diff Lot',
+        icon: 'fas fa-chart-area',
+        description: 'Live Diff Lot per Symbol'
+      },
+      {
+        path: '/total-profit',
+        label: 'Total Profit',
+        icon: 'fas fa-dollar-sign',
+        description: 'Live Total Profit per Symbol'
       },
       {
         path: '/customer-data',

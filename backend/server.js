@@ -9,35 +9,30 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const socketIo = require('socket.io');
+// WebSocket removed: using HTTP polling instead
+// const socketIo = require('socket.io');
 const { getDbConnection, executeQuery, executeTransaction, getPoolStats } = require('./utils/dbHelper');
-// Load environment variables
-const envPath = process.env.NODE_ENV === 'production' ? './.env' : '../.env';
-require('dotenv').config({ path: envPath });
+// Load environment variables from both backend/.env and project-root/.env if present
+try {
+  const candidates = [path.resolve(__dirname, '.env'), path.resolve(__dirname, '../.env')];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      require('dotenv').config({ path: p });
+    }
+  }
+} catch (e) {
+  console.warn('ENV load warning:', e?.message);
+}
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: {
-    origin: function(origin, callback) {
-      const allowedOrigins = [
-        'http://localhost:3000',
-        'https://web.itradebook.com',
-        'https://itradebook.com'
-      ];
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
-    credentials: true
-  }
-});
+const io = { on: () => {}, emit: () => {} }; // no-op stub
 const port = process.env.PORT || process.env.IISNODE_PORT || 3001;
+// In-memory cache for authenticated user lookups to reduce DB hits
+const userCache = new Map(); // userId -> { at: number, user: { id, username, email, user_type, is_verified } }
 
 // Middleware
-app.use(cors({
+const corsOptions = {
   origin: function(origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
     if(!origin) return callback(null, true);
@@ -84,8 +79,12 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
+};
+app.use(cors(corsOptions));
+
+// Ensure CORS preflight requests return immediately with same policy
+app.options('*', cors(corsOptions));
 
 app.use(express.json());
 
@@ -217,7 +216,39 @@ const authenticateToken = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-secret');
     console.log('✅ Token decoded successfully:', { userId: decoded.userId });
-    
+
+    const validateUserInDb = String(process.env.AUTH_VALIDATE_USER || 'false').toLowerCase() === 'true';
+
+    // If not validating against DB, trust token claims and continue
+    if (!validateUserInDb) {
+      const tokenUser = {
+        id: decoded.userId,
+        userId: decoded.userId,
+        username: decoded.username,
+        email: decoded.email,
+        user_type: decoded.user_type || decoded.userType || 'regular',
+        userType: decoded.user_type || decoded.userType || 'regular',
+        is_verified: decoded.isVerified
+      };
+      req.user = tokenUser;
+      req.session = req.session || {};
+      req.session.user_id = tokenUser.id;
+      req.session.user_type = tokenUser.user_type;
+      return next();
+    }
+
+    // Check in-memory cache first to avoid DB round-trip on every request
+    const cacheTtlMs = Math.max(5000, parseInt(process.env.AUTH_USER_CACHE_TTL_MS || '30000', 10));
+    const cached = userCache.get(decoded.userId);
+    if (cached && (Date.now() - cached.at) < cacheTtlMs) {
+      req.user = { ...cached.user, userType: cached.user.user_type };
+      req.session = req.session || {};
+      req.session.user_id = cached.user.id;
+      req.session.user_type = cached.user.user_type || 'regular';
+      console.log('🔐 User from cache:', { id: req.user.id, username: req.user.username, type: req.user.user_type });
+      return next();
+    }
+
     conn = await getDbConnection(pool);
       
     // Check admin_users first
@@ -270,7 +301,13 @@ const authenticateToken = async (req, res, next) => {
       username: req.user.username,
       type: req.user.user_type
     });
-    
+    // Cache the normalized user to speed up subsequent requests
+    try {
+      userCache.set(req.user.id, { at: Date.now(), user: req.user });
+    } catch (e) {
+      console.warn('User cache set failed:', e?.message);
+    }
+
     next();
   } catch (err) {
     console.error('❌ Token verification error:', {
@@ -436,6 +473,11 @@ async function initializeTables() {
       )
     `);
 
+    // Helpful indexes for live data performance (ignore if already exist)
+    try { await conn.query(`CREATE INDEX idx_trading_date ON trading_data (date)`); } catch (e) { if (e.code !== 'ER_DUP_KEYNAME') console.error('Index date error:', e.message); }
+    try { await conn.query(`CREATE INDEX idx_trading_symbol_date_id ON trading_data (symbol_ref, date, id)`); } catch (e) { if (e.code !== 'ER_DUP_KEYNAME') console.error('Index symbol_date_id error:', e.message); }
+    // Note: idx_trading_date_symbol_id removed (reverted to previous behavior)
+
     // Create symbol_custom_names table
     await conn.query(`
       CREATE TABLE IF NOT EXISTS symbol_custom_names (
@@ -451,86 +493,7 @@ async function initializeTables() {
       )
     `);
 
-    // Create P&L report daily storage table
-    await conn.query(`
-      CREATE TABLE IF NOT EXISTS pl_report_daily (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        trade_date DATE NOT NULL,
-        symbol_ref VARCHAR(50) NOT NULL,
-        year INT NOT NULL,
-        month INT NOT NULL,
-        
-        mktprice DECIMAL(20,8),
-        buysize1 DECIMAL(20,8),
-        sellsize1 DECIMAL(20,8),
-        buysize2 DECIMAL(20,8),
-        sellsize2 DECIMAL(20,8),
-        buyprice1 DECIMAL(20,8),
-        sellprice1 DECIMAL(20,8),
-        buyprice2 DECIMAL(20,8),
-        sellprice2 DECIMAL(20,8),
-        
-        company_balance DECIMAL(20,8),
-        company_equity DECIMAL(20,8),
-        company_floating DECIMAL(20,8),
-        company_pln DECIMAL(20,8),
-        company_deposit DECIMAL(20,8) DEFAULT 0,
-        company_withdrawal DECIMAL(20,8) DEFAULT 0,
-        company_realized DECIMAL(20,8),
-        company_unrealized DECIMAL(20,8),
-        
-        exp_balance DECIMAL(20,8),
-        exp_equity DECIMAL(20,8),
-        exp_floating DECIMAL(20,8),
-        exp_pln DECIMAL(20,8),
-        exp_realized DECIMAL(20,8),
-        exp_unrealized DECIMAL(20,8),
-        
-        accn_pf DECIMAL(20,8),
-        daily_company_total DECIMAL(20,8),
-        daily_exp_total DECIMAL(20,8),
-        daily_grand_total DECIMAL(20,8),
-        
-        is_finalized BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        
-        UNIQUE KEY unique_date_symbol (trade_date, symbol_ref),
-        INDEX idx_year_month (year, month),
-        INDEX idx_symbol_ref (symbol_ref),
-        INDEX idx_trade_date (trade_date),
-        INDEX idx_finalized (is_finalized)
-      )
-    `);
-
-    // Add company_pln column if it doesn't exist (for existing databases)
-    try {
-      await conn.query(`
-        ALTER TABLE pl_report_daily 
-        ADD COLUMN company_pln DECIMAL(20,8) AFTER company_floating
-      `);
-      console.log('✓ Added company_pln column to existing table');
-    } catch (alterError) {
-      // Column already exists or other error - this is expected for new installations
-      if (alterError.code !== 'ER_DUP_FIELDNAME') {
-        console.log('Note: company_pln column may already exist or table is new');
-      }
-    }
-
-    // Add deposit and withdrawal columns if they don't exist
-    try {
-      await conn.query(`
-        ALTER TABLE pl_report_daily 
-        ADD COLUMN company_deposit DECIMAL(20,8) DEFAULT 0 AFTER company_pln,
-        ADD COLUMN company_withdrawal DECIMAL(20,8) DEFAULT 0 AFTER company_deposit
-      `);
-      console.log('✓ Added company_deposit and company_withdrawal columns to existing table');
-    } catch (alterError) {
-      // Columns already exist or other error
-      if (alterError.code !== 'ER_DUP_FIELDNAME') {
-        console.log('Note: deposit/withdrawal columns may already exist or table is new');
-      }
-    }
+    // P&L Report tables removed from initialization
 
     console.log('✓ Database tables initialized successfully');
   } catch (error) {
@@ -553,7 +516,7 @@ async function initializeTables() {
 initializeTables();
 
 // Import route handlers with error handling
-let auth, rawData, report, comments, plReport, customerData, symbolNames, getsymbols, customerTrading, grids, eodReceive, eodCustomerData;
+let auth, rawData, report, comments, customerData, symbolNames, getsymbols, customerTrading, grids, eodReceive, eodCustomerData, alerts;
 
 const dbHelpers = { getDbConnection, executeQuery, executeTransaction, getPoolStats };
 
@@ -585,12 +548,7 @@ try {
   console.error('✗ Error loading comments routes:', error.message);
 }
 
-try {
-  plReport = require('./routes/plReport')(pool, { authenticateToken, getAllowedSymbols }, dbHelpers);
-  console.log('✓ PLReport routes loaded');
-} catch (error) {
-  console.error('✗ Error loading plReport routes:', error.message);
-}
+
 
 try {
   customerData = require('./routes/customerData')(pool, { authenticateToken, getAllowedSymbols }, dbHelpers);
@@ -619,6 +577,13 @@ try {
 
 
 try {
+  alerts = require('./routes/alerts')(pool, { authenticateToken, getAllowedSymbols }, dbHelpers);
+  console.log('✓ Alerts routes loaded');
+} catch (error) {
+  console.error('✗ Error loading alerts routes:', error.message);
+}
+
+try {
   eodReceive = require('./routes/eodReceive')(pool, { authenticateToken, getAllowedSymbols }, dbHelpers);
   console.log('✓ EOD Receive routes loaded');
 } catch (error) {
@@ -641,13 +606,17 @@ try {
   console.error('✗ Error mounting auth routes:', error.message);
 }
 
+// RawData table routes removed; keeping selective mounts below
+
 try {
-  if (rawData && rawData.router) {
-    app.use('/api/raw-data', rawData.router);
-    console.log('✓ RawData routes mounted');
+  if (alerts && alerts.router) {
+    app.use('/api/alerts', alerts.router);
+    console.log('✓ Alerts routes mounted at /api/alerts');
+    // Expose alerts helper to other routes (for live evaluation on insert)
+    app.set('alerts', alerts);
   }
 } catch (error) {
-  console.error('✗ Error mounting rawData routes:', error.message);
+  console.error('✗ Error mounting alerts routes:', error.message);
 }
 
 try {
@@ -705,20 +674,16 @@ try {
   console.error('✗ Error mounting symbols route:', error.message);
 }
 
-try {
-  if (rawData && rawData._data) {
-    app.get('/api/trading-data', ...rawData._data);
-    app.get('/api/live-data', ...rawData._data);  // Alias for /api/trading-data
-    console.log('✓ Trading data routes mounted');
-  }
-} catch (error) {
-  console.error('✗ Error mounting trading data routes:', error.message);
-}
+// Omit /api/trading-data and /api/raw-data CRUD endpoints
 
 try {
   if (rawData && rawData._live) {
     app.get('/api/live', ...rawData._live);  // Live data endpoint for real-time updates
     console.log('✓ Live data route mounted');
+  }
+  if (rawData && rawData._liveSeries) {
+    app.get('/api/live-series', ...rawData._liveSeries);  // Time-series endpoint for chart pages
+    console.log('✓ Live series route mounted');
   }
 } catch (error) {
   console.error('✗ Error mounting live data route:', error.message);
@@ -761,16 +726,7 @@ try {
   console.error('✗ Error mounting refids route:', error.message);
 }
 
-// Mount plReport routes (put this AFTER specific routes to avoid conflicts)
-try {
-  if (plReport && plReport.router) {
-    app.use('/api', plReport.router); // Mount plReport at /api for existing routes like get_symbols, get_years, etc.
-    app.use('/api/plreport', plReport.router); // Also mount at /api/plreport for new deposit/withdrawal routes
-    console.log('✓ PLReport routes mounted at /api and /api/plreport');
-  }
-} catch (error) {
-  console.error('✗ Error mounting plReport routes:', error.message);
-}
+
 
 // Mount getsymbols routes
 try {
@@ -1173,10 +1129,15 @@ io.on('connection', (socket) => {
 app.set('io', io);
 
 // Helper function to broadcast trading data updates
+let isBroadcastingLive = false;
 const broadcastTradingDataUpdate = async () => {
+  if (isBroadcastingLive) {
+    return;
+  }
+  isBroadcastingLive = true;
   let conn;
   try {
-    conn = await pool.getConnection();
+    conn = await getDbConnection(pool);
     
     if (!conn) {
       console.error('Failed to get database connection for trading data broadcast');
@@ -1266,7 +1227,7 @@ const broadcastTradingDataUpdate = async () => {
 const broadcastCustomerTradingUpdate = async () => {
   let conn;
   try {
-    conn = await pool.getConnection();
+    conn = await getDbConnection(pool);
     
     if (!conn) {
       console.error('Failed to get database connection for customer trading broadcast');
@@ -1381,6 +1342,7 @@ const broadcastCustomerTradingUpdate = async () => {
     console.error('Error broadcasting customer trading update:', error);
   } finally {
     if (conn) conn.release();
+    isBroadcastingLive = false;
   }
 };
 
@@ -1522,14 +1484,27 @@ const checkForDataChanges = async () => {
   }
 };
 
-// Check for changes every 5 seconds (lightweight check)
-setInterval(checkForDataChanges, 1000);
+// Feature flags for intervals (disabled by default for performance)
+const ENABLE_CHANGE_CHECK = process.env.ENABLE_CHANGE_CHECK === 'true';
+const ENABLE_LIVE_BROADCAST = process.env.ENABLE_LIVE_BROADCAST === 'true';
 
-// Broadcast live data updates every 5 seconds for DailySavedDataPage
-setInterval(broadcastLiveDataUpdate, 1000);
+// Check for changes every 5 seconds
+if (ENABLE_CHANGE_CHECK) {
+  setInterval(checkForDataChanges, 5000);
+  console.log('🔍 Real-time change detection enabled (5s intervals)');
+} else {
+  console.log('🔍 Real-time change detection disabled');
+}
 
-console.log('🔍 Real-time change detection enabled (5s intervals)');
-console.log('📡 Live data WebSocket broadcasts enabled (5s intervals)');
+// Broadcast live data updates every 10 seconds (disabled by default)
+if (ENABLE_LIVE_BROADCAST) {
+  setInterval(broadcastLiveDataUpdate, 10000);
+  console.log('📡 Live data WebSocket broadcasts enabled (10s intervals)');
+} else {
+  console.log('📡 Live data WebSocket broadcasts disabled');
+}
+
+// (Messages above printed depending on flags)
 console.log('� Simple WebSocket heartbeat enabled (30s intervals)');
 
 server.listen(port, () => {
@@ -1544,6 +1519,15 @@ server.listen(port, () => {
     console.log('Initial pool stats:');
     logPoolStats();
   }, 1000);
+
+  // Start alerts background evaluator (if enabled)
+  try {
+    if (alerts && typeof alerts.start === 'function') {
+      alerts.start();
+    }
+  } catch (e) {
+    console.error('Failed to start alerts scheduler:', e.message);
+  }
 }).on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.log(`Port ${port} is already in use. In Plesk/IIS, this is normal - the server will use the assigned port.`);

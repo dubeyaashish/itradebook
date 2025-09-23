@@ -166,15 +166,15 @@ const TradingTable = ({
               <button 
                 onClick={handleBulkDelete}
                 disabled={selectedRows.size === 0}
-                className="retry-button"
+                className={`auth-button ${selectedRows.size === 0 ? 'opacity-60 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
               >
-                Delete Selected ({selectedRows.size})
+                <i className="fas fa-trash mr-2"></i>Delete Selected ({selectedRows.size})
               </button>
               <button 
                 onClick={() => setShowInsertModal(true)}
                 className="auth-button"
               >
-                Insert New Row
+                <i className="fas fa-plus mr-2"></i>Insert New Record
               </button>
             </div>
           </div>

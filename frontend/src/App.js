@@ -15,13 +15,15 @@ import ResetPasswordPage from './pages/ResetPasswordPage';
 import ReportPage from './pages/ReportPage';
 import DailySavedDataPage from './pages/DailySavedDataPage';
 import CustomerDataPage from './pages/CustomerDataPage';
-import RawDataPage from './pages/RawDataPage';
-import PLReportPage from './pages/PLReportPage';
 import GetSymbolsPage from './pages/GetSymbolsPage';
 import CustomerTradingPage from './pages/CustomerTradingPage';
 import GridsPage from './pages/GridsPage';
 import EodReceivePage from './pages/EodReceivePage';
 import EodCustomerDataPage from './pages/EodCustomerDataPage';
+import ProfitRatioPage from './pages/ProfitRatioPage';
+import DiffLotPage from './pages/DiffLotPage';
+import TotalProfitPage from './pages/TotalProfitPage';
+import AlertsConfigPage from './pages/AlertsConfigPage';
 
 import './App.css';
 
@@ -307,6 +309,15 @@ const ProtectedRoute = ({ children }) => {
   return <ProtectedRouteContent>{children}</ProtectedRouteContent>;
 };
 
+// Guard: block managed users from restricted routes
+const NonManagedOnly = ({ children }) => {
+  const { user } = useAuth();
+  if (user?.user_type === 'managed') {
+    return <Navigate to="/" replace />;
+  }
+  return children;
+};
+
 // Public Route Component (redirects to dashboard if authenticated)
 const PublicRoute = ({ children }) => {
   const { isAuthenticated } = useAuth();
@@ -379,22 +390,6 @@ const App = () => {
             } 
           />
           <Route 
-            path="/raw-data" 
-            element={
-              <ProtectedRoute>
-                <RawDataPage />
-              </ProtectedRoute>
-            } 
-          />
-          <Route 
-            path="/pl-report" 
-            element={
-              <ProtectedRoute>
-                <PLReportPage />
-              </ProtectedRoute>
-            } 
-          />
-          <Route 
             path="/getsymbols" 
             element={
               <ProtectedRoute>
@@ -433,6 +428,42 @@ const App = () => {
                 <EodCustomerDataPage />
               </ProtectedRoute>
             } 
+          />
+
+          {/* Live metric pages */}
+          <Route 
+            path="/profit-ratio" 
+            element={
+              <ProtectedRoute>
+                <ProfitRatioPage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/diff-lot" 
+            element={
+              <ProtectedRoute>
+                <DiffLotPage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/total-profit" 
+            element={
+              <ProtectedRoute>
+                <TotalProfitPage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route
+            path="/alerts"
+            element={
+              <ProtectedRoute>
+                <NonManagedOnly>
+                  <AlertsConfigPage />
+                </NonManagedOnly>
+              </ProtectedRoute>
+            }
           />
 
           {/* Fallback route */}

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth, axiosInstance, STORAGE_KEYS } from '../App';
+import { customSelectStyles } from '../components/SelectStyles';
 import { safeConsole } from '../utils/secureLogging';
 import TradingTable from '../components/TradingTable';
 import ModernPagination from '../components/ModernPagination';
@@ -34,96 +35,23 @@ const ReportPage = () => {
   // 2025 filter state (only for regular users)
   const [show2025Only, setShow2025Only] = useState(false);
 
-  // react-select styles (keeps dropdown above modals/overflow)
-// put this where you define selectStyles
-const selectStyles = {
-  menuPortal: (base) => ({ ...base, zIndex: 9999 }),
-
-  control: (base, state) => ({
-    ...base,
-    minHeight: 42,
-    backgroundColor: 'var(--bg-input)',
-    borderColor: state.isFocused ? 'var(--accent-primary)' : 'var(--border-color)',
-    boxShadow: state.isFocused ? '0 0 0 3px rgb(59 130 246 / 0.10)' : 'none',
-    ':hover': { borderColor: 'var(--accent-primary)' },
-    color: 'var(--text-primary)',
-  }),
-
-  placeholder: (base) => ({
-    ...base,
-    color: 'var(--text-muted)',
-  }),
-  input: (base) => ({
-    ...base,
-    color: 'var(--text-primary)',
-  }),
-  singleValue: (base) => ({
-    ...base,
-    color: 'var(--text-primary)',
-  }),
-  valueContainer: (base) => ({
-    ...base,
-    padding: '2px 8px',
-    color: 'var(--text-primary)',
-  }),
-
-  multiValue: (base) => ({
-    ...base,
-    backgroundColor: 'rgba(59,130,246,.15)',                // accent-primary @ 15%
-    border: '1px solid var(--accent-primary)',
-  }),
-  multiValueLabel: (base) => ({
-    ...base,
-    color: 'var(--text-primary)',
-    fontWeight: 600,
-  }),
-  multiValueRemove: (base) => ({
-    ...base,
-    color: 'var(--text-secondary)',
-    ':hover': { backgroundColor: 'rgba(239,68,68,.25)', color: '#fff' }, // error color
-  }),
-
-  indicatorsContainer: (base) => ({ ...base, color: 'var(--text-secondary)' }),
-  dropdownIndicator: (base) => ({
-    ...base, color: 'var(--text-secondary)',
-    ':hover': { color: 'var(--text-primary)' },
-  }),
-  clearIndicator: (base) => ({
-    ...base, color: 'var(--text-secondary)',
-    ':hover': { color: 'var(--accent-error)' },
-  }),
-
-  menu: (base) => ({
-    ...base,
-    backgroundColor: 'var(--bg-card)',
-    border: '1px solid var(--border-color)',
-    boxShadow: 'var(--shadow-lg)',
-    color: 'var(--text-primary)',
-    overflow: 'hidden',
-  }),
-  menuList: (base) => ({
-    ...base,
-    backgroundColor: 'var(--bg-card)',
-    padding: 4,
-  }),
-  option: (base, state) => ({
-    ...base,
-    backgroundColor: state.isSelected
-      ? 'rgba(59,130,246,.25)'  // selected
-      : state.isFocused
-      ? 'rgba(59,130,246,.12)'  // hover
-      : 'transparent',
-    color: 'var(--text-primary)',
-    ':active': { backgroundColor: 'rgba(59,130,246,.25)' },
-  }),
-};
+// Use shared dark select styles for consistency
+const selectStyles = customSelectStyles;
 
 
   // Options for react-select
-  const symbolOptions = useMemo(
-    () => symbols.map(s => ({ value: s, label: s })),
-    [symbols]
-  );
+  const symbolOptions = useMemo(() => {
+    return (Array.isArray(symbols) ? symbols : []).map((s) => {
+      if (typeof s === 'string') return { value: s, label: s };
+      if (s && typeof s === 'object') {
+        const v = s.value ?? s.symbolref ?? s.symbol_ref ?? '';
+        const l = s.label ?? v;
+        return { value: String(v), label: String(l) };
+      }
+      return { value: String(s ?? ''), label: String(s ?? '') };
+    });
+  }, [symbols]);
+  const symbolValues = useMemo(() => symbolOptions.map(o => o.value), [symbolOptions]);
   const refidOptions = useMemo(
     () => refids.map(r => ({ value: r, label: r })),
     [refids]
@@ -150,8 +78,11 @@ const selectStyles = {
         window.location.href = '/login';
         return;
       }
-      const response = await axios.get('/api/symbols');
-      setSymbols(response.data || []);
+      // Use receive.itradebook symbols endpoint for Report page
+      const response = await axiosInstance.get('/api/getsymbols/symbols');
+      const syms = Array.isArray(response.data) ? response.data : [];
+      const normalized = syms.map((s) => typeof s === 'string' ? s : (s?.value || s?.symbolref || s));
+      setSymbols(normalized);
     } catch (error) {
       if (error.response?.status === 401) {
         localStorage.removeItem(STORAGE_KEYS.TOKEN);
@@ -170,7 +101,7 @@ const selectStyles = {
         window.location.href = '/login';
         return;
       }
-      const response = await axios.get('/api/refids');
+      const response = await axiosInstance.get('/api/refids');
       setRefids(response.data || []);
     } catch (error) {
       if (error.response?.status === 401) {
@@ -202,7 +133,7 @@ const selectStyles = {
         params.append('refid_starts_with', '2025');
       }
 
-      const response = await axios.get(`/api/data?${params}`);
+      const response = await axiosInstance.get(`/api/data?${params}`);
       
       setData(response.data?.rows || []);
       setTotalRecords(response.data?.total || 0);
@@ -441,10 +372,10 @@ const selectStyles = {
 
             <div className="mt-4 col-span-1 md:col-span-2 lg:col-span-3 xl:col-span-4 flex flex-col sm:flex-row items-end justify-end gap-3">
               <button onClick={() => loadData()} className="auth-button w-full sm:w-auto px-4 py-2">
-                Apply Filters
+                <i className="fas fa-filter mr-2"></i>Apply Filters
               </button>
               <button onClick={exportToCSV} className="auth-button-secondary w-full sm:w-auto px-4 py-2">
-                Export CSV
+                <i className="fas fa-download mr-2"></i>Export CSV
               </button>
             </div>
           </div>
@@ -463,7 +394,7 @@ const selectStyles = {
         {/* Data Table */}
         <TradingTable
           data={data}
-          symbols={symbols}
+          symbols={symbolValues}
           loading={loading}
           totalRecords={totalRecords}
           currentPage={filters.page}

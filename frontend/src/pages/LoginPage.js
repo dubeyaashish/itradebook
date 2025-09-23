@@ -38,7 +38,7 @@ const LoginPage = () => {
       
       switch(userData.userType) {
         case 'admin':
-          redirectPath = '/raw-data';  // Admin users see raw data by default
+          redirectPath = '/';  // Admin users go to dashboard by default
           break;
         case 'managed':
           redirectPath = '/daily-saved-data';  // Managed users see daily saved data

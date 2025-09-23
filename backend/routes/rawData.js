@@ -1,7 +1,118 @@
 const express = require('express');
 
-module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
+module.exports = function(pool, { authenticateToken, getAllowedSymbols }, dbHelpers) {
     const router = express.Router();
+    // Simple in-memory cache for symbols endpoint
+    const symbolsCache = new Map(); // key -> { at: number, data: string[] }
+    const { getDbConnection } = dbHelpers || {};
+
+    // Live time‑series handler (inside module scope so helpers/pool are available)
+    const liveSeriesHandler = async (req, res) => {
+        let conn;
+        try {
+            conn = getDbConnection ? await getDbConnection(pool) : await pool.getConnection();
+            await conn.query("SET time_zone = '+07:00'");
+
+            const allowed = await getAllowedSymbols(conn, req);
+            if (Array.isArray(allowed) && allowed.length === 0) {
+                return res.json([]);
+            }
+
+            const limitPerSymbol = Math.min(parseInt(req.query.limit || '60', 10), 500);
+            let symbolFilterSql = '';
+            const params = [];
+
+            let querySymbols = [];
+            if (req.query.symbol_ref) {
+                querySymbols = Array.isArray(req.query.symbol_ref) ? req.query.symbol_ref : [req.query.symbol_ref];
+            }
+            if (allowed !== null && Array.isArray(allowed)) {
+                querySymbols = (querySymbols.length ? querySymbols : allowed).filter(s => allowed.includes(s));
+            }
+            if (querySymbols.length > 0) {
+                symbolFilterSql = ` AND t.symbol_ref IN (${querySymbols.map(() => '?').join(',')})`;
+                params.push(...querySymbols);
+            } else if (Array.isArray(allowed) && allowed.length > 0) {
+                symbolFilterSql = ` AND t.symbol_ref IN (${allowed.map(() => '?').join(',')})`;
+                params.push(...allowed);
+            }
+
+            const todayStr = new Date().toISOString().split('T')[0];
+            const startDate = req.query.start_date || todayStr;
+            const endDate = req.query.end_date || startDate;
+            const startTime = req.query.start_time || '00:00:00';
+            const endTime = req.query.end_time || '23:59:59';
+            const startTs = `${startDate} ${startTime}`;
+            const endTs = `${endDate} ${endTime}`;
+
+            const sql = `
+                SELECT * FROM (
+                    SELECT 
+                        t.symbol_ref,
+                        t.date,
+                        UNIX_TIMESTAMP(t.date) as ts,
+                        t.buylot, t.avgbuy, t.selllot, t.avgsell,
+                        t.profit_total, t.profit_ratio, t.difflot,
+                        ROW_NUMBER() OVER (PARTITION BY t.symbol_ref ORDER BY t.date DESC, t.id DESC) as rn
+                    FROM trading_data t
+                    WHERE t.date >= ? AND t.date <= ?
+                      AND (t.type IS NULL OR t.type <> 'snapshot')
+                      ${symbolFilterSql}
+                ) x
+                WHERE x.rn <= ?
+                ORDER BY x.symbol_ref ASC, x.date ASC
+            `;
+            params.unshift(startTs, endTs);
+            params.push(limitPerSymbol);
+
+            let rows = await conn.query(sql, params);
+
+            // Fallback: if no rows in requested range, fetch most recent N points across all time
+            if (!rows || rows.length === 0) {
+                const sqlFallback = `
+                    SELECT * FROM (
+                        SELECT 
+                            t.symbol_ref,
+                            t.date,
+                            UNIX_TIMESTAMP(t.date) as ts,
+                            t.buylot, t.avgbuy, t.selllot, t.avgsell,
+                            t.profit_total, t.profit_ratio, t.difflot,
+                            ROW_NUMBER() OVER (PARTITION BY t.symbol_ref ORDER BY t.date DESC, t.id DESC) as rn
+                        FROM trading_data t
+                        WHERE (t.type IS NULL OR t.type <> 'snapshot')
+                        ${symbolFilterSql}
+                    ) x
+                    WHERE x.rn <= ?
+                    ORDER BY x.symbol_ref ASC, x.date ASC
+                `;
+                const fbParams = [];
+                if (querySymbols.length > 0) fbParams.push(...querySymbols);
+                else if (Array.isArray(allowed) && allowed.length > 0) fbParams.push(...allowed);
+                fbParams.push(limitPerSymbol);
+                rows = await conn.query(sqlFallback, fbParams);
+            }
+
+            const map = new Map();
+            for (const r of rows || []) {
+                if (!r.symbol_ref) continue;
+                if (!map.has(r.symbol_ref)) map.set(r.symbol_ref, []);
+                map.get(r.symbol_ref).push({
+                    ts: Number(r.ts) || 0,
+                    profit_ratio: parseFloat(r.profit_ratio ?? (((parseFloat(r.selllot)||0)*(parseFloat(r.avgsell)||0)) / Math.max(1,(parseFloat(r.buylot)||0)*(parseFloat(r.avgbuy)||0)) - 1) * 100) || 0,
+                    difflot: parseFloat(r.difflot ?? ((parseFloat(r.buylot)||0) - (parseFloat(r.selllot)||0))) || 0,
+                    profit_total: parseFloat(r.profit_total ?? (((parseFloat(r.selllot)||0)*(parseFloat(r.avgsell)||0)) - ((parseFloat(r.buylot)||0)*(parseFloat(r.avgbuy)||0)))) || 0,
+                });
+            }
+
+            const result = Array.from(map.entries()).map(([symbol_ref, points]) => ({ symbol_ref, points }));
+            res.json(result);
+        } catch (err) {
+            console.error('Live series fetch error:', err);
+            res.status(500).json({ error: 'Database error' });
+        } finally {
+            if (conn) conn.release();
+        }
+    };
 
     // Date range handler
     async function dateRangeHandler(req, res) {
@@ -161,8 +272,21 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
     async function symbolsHandler(req, res) {
         let conn;
         try {
-            conn = await pool.getConnection();
+            conn = getDbConnection ? await getDbConnection(pool) : await pool.getConnection();
+            await conn.query("SET time_zone = '+07:00'");
             const allowed = await getAllowedSymbols(conn, req);
+
+            // Compose cache key (per user + date range)
+            const userId = req.user?.id || 0;
+            const sDate = req.query.start_date || '';
+            const eDate = req.query.end_date || '';
+            const cacheKey = `${Array.isArray(allowed) ? `u:${userId}` : 'all'}|${sDate}|${eDate}`;
+            const ttlMs = Math.max(5000, parseInt(process.env.SYMBOLS_CACHE_TTL_MS || '30000', 10));
+            const now = Date.now();
+            const cached = symbolsCache.get(cacheKey);
+            if (cached && (now - cached.at) < ttlMs) {
+                return res.json(cached.data);
+            }
             
             let query = `
                 SELECT DISTINCT symbol_ref 
@@ -172,17 +296,36 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
                   AND (type IS NULL OR type <> 'snapshot')
             `;
             const params = [];
-            
-            if (allowed && allowed.length > 0) {
-                query += ` AND symbol_ref IN (${allowed.map(() => '?').join(',')})`;
-                params.push(...allowed);
-            } else if (Array.isArray(allowed) && allowed.length === 0) {
-                return res.json([]);
+
+            // If managed and we have explicit allowed list, just return it (fast path)
+            if (Array.isArray(allowed)) {
+                if (allowed.length === 0) {
+                    symbolsCache.set(cacheKey, { at: now, data: [] });
+                    return res.json([]);
+                }
+                const out = [...new Set(allowed)].sort((a,b)=>String(a).localeCompare(String(b)));
+                symbolsCache.set(cacheKey, { at: now, data: out });
+                return res.json(out);
             }
+
+            // Optional date filters; if not provided, limit to recent N days to avoid full table scans
+            if (req.query.start_date && req.query.end_date) {
+                query += ' AND date BETWEEN ? AND ?';
+                const startTime = req.query.start_time || '00:00:00';
+                const endTime = req.query.end_time || '23:59:59';
+                params.push(`${req.query.start_date} ${startTime}`, `${req.query.end_date} ${endTime}`);
+            } else {
+                // Default recent range (configurable). Embed numeric to avoid driver issues with INTERVAL parameter.
+                const recentDays = Math.max(1, parseInt(process.env.SYMBOLS_DEFAULT_DAYS || '7', 10));
+                query += ` AND date >= (CURDATE() - INTERVAL ${recentDays} DAY)`;
+            }
+            
+            // Note: when allowed === null (no restriction), we skip symbol_ref filter
             
             query += ' ORDER BY symbol_ref';
             const rows = await conn.query(query, params);
             const symbols = rows.map((r) => r.symbol_ref);
+            symbolsCache.set(cacheKey, { at: now, data: symbols });
             res.json(symbols);
         } catch (err) {
             console.error('Symbols error:', err);
@@ -192,13 +335,14 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
         }
     }
 
-    // Live data handler
-// Live data handler - OPTIMIZED VERSION
+    // Live data handler (returns second-latest per symbol)
 async function liveDataHandler(req, res) {
     let conn;
     try {
-        // Add timeout for this endpoint
-        conn = await pool.getConnection();
+        // Use robust connection helper when available
+        conn = getDbConnection ? await getDbConnection(pool) : await pool.getConnection();
+        // Align timezone with rest of app (Bangkok)
+        await conn.query("SET time_zone = '+07:00'");
         
         const allowed = await getAllowedSymbols(conn, req);
         
@@ -206,38 +350,52 @@ async function liveDataHandler(req, res) {
             return res.json([]);
         }
 
+        // Build date range using session time zone (+07:00) and CURDATE for index-friendly filtering
+        // Avoid DATE() on column to keep index usage
         let params = [];
         let symbolFilterSql = '';
-
-        // Add today's date filter
-        const today = new Date().toISOString().split('T')[0]; // Get YYYY-MM-DD format
-        params.push(today);
-
         if (allowed !== null && allowed.length > 0) {
             symbolFilterSql = ` AND symbol_ref IN (${allowed.map(() => '?').join(',')})`;
             params.push(...allowed);
         }
 
-        // Optimized query - remove the expensive COUNT subquery
-        const query = `
-            SELECT t.*,
-                   UNIX_TIMESTAMP(t.date) as timestamp
-            FROM (
-                SELECT *,
+        // Main query: today only (fast path)
+        const queryToday = `
+            SELECT * FROM (
+                SELECT t.*,
+                       UNIX_TIMESTAMP(t.date) as timestamp,
                        ROW_NUMBER() OVER (PARTITION BY symbol_ref ORDER BY date DESC, id DESC) as row_num
-                FROM trading_data
-                WHERE DATE(date) = ?
+                FROM trading_data t
+                WHERE t.date >= CURDATE() AND t.date < (CURDATE() + INTERVAL 1 DAY)
                 ${symbolFilterSql}
-            ) t
-            WHERE t.row_num <= 2
-            ORDER BY t.symbol_ref, t.date DESC
+            ) x
+            WHERE x.row_num <= 2
+            ORDER BY x.symbol_ref, x.date DESC, x.id DESC
         `;
-        
-        console.log('🔍 Starting optimized live data query for user:', req.user?.username);
+        console.log('🔍 /api/live today query start', { user: req.user?.username, tz: '+07:00', symbols: Array.isArray(allowed) ? allowed.length : 'all' });
         const startTime = Date.now();
-        const rows = await conn.query(query, params);
-        const duration = Date.now() - startTime;
-        console.log(`✅ Live data query completed in ${duration}ms, returned ${rows.length} raw rows for today (${today})`);
+        let rows = await conn.query(queryToday, params);
+        let duration = Date.now() - startTime;
+        console.log(`✅ /api/live today in ${duration}ms, rows=${rows.length}`);
+
+        // Fallback: if no rows for today, return second-latest across all time (index on symbol_ref,date,id helps)
+        if (!rows || rows.length === 0) {
+            const fallbackStart = Date.now();
+            const queryAll = `
+                SELECT * FROM (
+                    SELECT t.*,
+                           UNIX_TIMESTAMP(t.date) as timestamp,
+                           ROW_NUMBER() OVER (PARTITION BY symbol_ref ORDER BY date DESC, id DESC) as row_num
+                    FROM trading_data t
+                    ${symbolFilterSql ? `WHERE 1=1 ${symbolFilterSql}` : ''}
+                ) x
+                WHERE x.row_num <= 2
+                ORDER BY x.symbol_ref, x.date DESC, x.id DESC
+            `;
+            rows = await conn.query(queryAll, params);
+            duration = Date.now() - fallbackStart;
+            console.log(`↩️  /api/live fallback(all-time) in ${duration}ms, rows=${rows.length}`);
+        }
         
         // Group by symbol and pick the right record for each
         const resultMap = new Map();
@@ -278,6 +436,7 @@ async function liveDataHandler(req, res) {
 
     // Mount additional handlers
     router.get('/live', authenticateToken, liveDataHandler);
+    router.get('/live-series', authenticateToken, liveSeriesHandler);
 
     // Insert trading data handler
     async function insertTradingDataHandler(req, res) {
@@ -333,6 +492,19 @@ async function liveDataHandler(req, res) {
                 message: 'Trading data inserted successfully',
                 id: result.insertId
             });
+
+            // Live alert evaluation for this symbol (non-blocking)
+            try {
+                const alerts = req.app && req.app.get('alerts');
+                if (alerts && typeof alerts.evaluate === 'function') {
+                    // Evaluate only this symbol to avoid scanning all rules
+                    setImmediate(() => {
+                        alerts.evaluate([symbol_ref]).catch((e)=>console.error('Alert live eval error:', e?.message));
+                    });
+                }
+            } catch (e) {
+                console.error('Alert live eval dispatch failed:', e?.message);
+            }
 
         } catch (err) {
             console.error('Insert trading data error:', err);
@@ -470,6 +642,96 @@ async function liveDataHandler(req, res) {
         _data: [authenticateToken, dataHandler],
         _symbols: [authenticateToken, symbolsHandler],
         _live: [authenticateToken, liveDataHandler],
+        _liveSeries: [authenticateToken, liveSeriesHandler],
         _exportCSV: [authenticateToken, csvExportHandler]
     };
 };
+
+// Live time-series handler: returns last N points for today per symbol
+async function liveSeriesHandler(req, res) {
+    let conn;
+    try {
+        conn = getDbConnection ? await getDbConnection(pool) : await pool.getConnection();
+        await conn.query("SET time_zone = '+07:00'");
+
+        const allowed = await getAllowedSymbols(conn, req);
+        if (Array.isArray(allowed) && allowed.length === 0) {
+            return res.json([]);
+        }
+
+        const limitPerSymbol = Math.min(parseInt(req.query.limit || '60', 10), 500);
+        let symbolFilterSql = '';
+        const params = [];
+
+        // Symbol filters from query
+        let querySymbols = [];
+        if (req.query.symbol_ref) {
+            querySymbols = Array.isArray(req.query.symbol_ref) ? req.query.symbol_ref : [req.query.symbol_ref];
+        }
+        if (allowed !== null) {
+            // Intersect with allowed
+            if (Array.isArray(allowed)) {
+                querySymbols = (querySymbols.length ? querySymbols : allowed).filter(s => allowed.includes(s));
+            }
+        }
+        if (querySymbols.length > 0) {
+            symbolFilterSql = ` AND t.symbol_ref IN (${querySymbols.map(() => '?').join(',')})`;
+            params.push(...querySymbols);
+        } else if (Array.isArray(allowed) && allowed.length > 0) {
+            symbolFilterSql = ` AND t.symbol_ref IN (${allowed.map(() => '?').join(',')})`;
+            params.push(...allowed);
+        }
+
+        // Date range
+        const todayStr = new Date().toISOString().split('T')[0];
+        const startDate = req.query.start_date || todayStr;
+        const endDate = req.query.end_date || startDate;
+        const startTime = req.query.start_time || '00:00:00';
+        const endTime = req.query.end_time || '23:59:59';
+        const startTs = `${startDate} ${startTime}`;
+        const endTs = `${endDate} ${endTime}`;
+
+        const sql = `
+          SELECT * FROM (
+            SELECT 
+              t.symbol_ref,
+              t.date,
+              UNIX_TIMESTAMP(t.date) as ts,
+              t.buylot, t.avgbuy, t.selllot, t.avgsell,
+              t.profit_total, t.profit_ratio, t.difflot,
+              ROW_NUMBER() OVER (PARTITION BY t.symbol_ref ORDER BY t.date DESC, t.id DESC) as rn
+            FROM trading_data t
+            WHERE t.date >= ? AND t.date <= ?
+              AND (t.type IS NULL OR t.type <> 'snapshot')
+              ${symbolFilterSql}
+          ) x
+          WHERE x.rn <= ?
+          ORDER BY x.symbol_ref ASC, x.date ASC
+        `;
+        params.unshift(startTs, endTs);
+        params.push(limitPerSymbol);
+
+        const rows = await conn.query(sql, params);
+
+        // Group into series per symbol with the three metrics
+        const map = new Map();
+        for (const r of rows) {
+            if (!r.symbol_ref) continue;
+            if (!map.has(r.symbol_ref)) map.set(r.symbol_ref, []);
+            map.get(r.symbol_ref).push({
+                ts: Number(r.ts) || 0,
+                profit_ratio: parseFloat(r.profit_ratio ?? (((parseFloat(r.selllot)||0)*(parseFloat(r.avgsell)||0)) / Math.max(1,(parseFloat(r.buylot)||0)*(parseFloat(r.avgbuy)||0)) - 1) * 100) || 0,
+                difflot: parseFloat(r.difflot ?? ((parseFloat(r.buylot)||0) - (parseFloat(r.selllot)||0))) || 0,
+                profit_total: parseFloat(r.profit_total ?? (((parseFloat(r.selllot)||0)*(parseFloat(r.avgsell)||0)) - ((parseFloat(r.buylot)||0)*(parseFloat(r.avgbuy)||0)))) || 0,
+            });
+        }
+
+        const result = Array.from(map.entries()).map(([symbol_ref, points]) => ({ symbol_ref, points }));
+        res.json(result);
+    } catch (err) {
+        console.error('Live series fetch error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        if (conn) conn.release();
+    }
+}
