@@ -13,12 +13,11 @@ const DiffLotPage = () => {
   const [seriesMap, setSeriesMap] = useState({});
   const timerRef = useRef(null);
   const controllerRef = useRef(null);
-
+  const isFetchingRef = useRef(false);
   const todayStr = new Date().toISOString().slice(0,10);
   const [startDate, setStartDate] = useState(todayStr);
   const [endDate, setEndDate] = useState(todayStr);
   const [symbolOptions, setSymbolOptions] = useState([]);
-  const isFetchingRef = useRef(false);
   const [selectedSymbols, setSelectedSymbols] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errMsg, setErrMsg] = useState('');
@@ -29,10 +28,11 @@ const DiffLotPage = () => {
   const fetchLive = async () => {
     const token = localStorage.getItem(STORAGE_KEYS?.TOKEN) || localStorage.getItem('auth_token') || localStorage.getItem('token');
     console.log('[DiffLot] fetching series…', { hasToken: !!token });
-    // Abort any in-flight
-    if (isFetchingRef.current) return; // avoid overlapping requests
+    if (isFetchingRef.current) return;
     isFetchingRef.current = true;
     controllerRef.current = new AbortController();
+    if (rows.length === 0) setLoading(true);
+    setErrMsg('');
     const params = new URLSearchParams();
     if (startDate) params.append('start_date', startDate);
     if (endDate) params.append('end_date', endDate);
@@ -40,11 +40,9 @@ const DiffLotPage = () => {
     if (endTime) params.append('end_time', `${endTime}:59`);
     selectedSymbols.forEach(opt => params.append('symbol_ref', opt.value));
     params.append('limit', '120');
-    if (rows.length === 0) setLoading(true);
-    setErrMsg('');
     try {
-      const seriesRes = await axiosInstance.get(`/api/live-series?${params.toString()}`, { signal: controllerRef.current.signal });
-      const groups = Array.isArray(seriesRes.data) ? seriesRes.data : [];
+      const res = await axiosInstance.get(`/api/live-series?${params.toString()}`, { signal: controllerRef.current.signal });
+      const groups = Array.isArray(res.data) ? res.data : [];
       setSeriesMap(() => {
         const next = {};
         groups.forEach(g => { next[g.symbol_ref] = {
@@ -73,30 +71,62 @@ const DiffLotPage = () => {
   };
 
   useEffect(() => {
-    // load symbols for date range
     const loadSymbols = async () => {
       try {
-        const p = new URLSearchParams();
-        if (startDate) p.append('start_date', startDate);
-        if (endDate) p.append('end_date', endDate);
-        const res = await axiosInstance.get(`/api/symbols?${p.toString()}`);
-        const syms = Array.isArray(res.data) ? res.data : [];
-        const opts = syms.map(s => ({ value: s, label: s }));
-        setSymbolOptions(opts);
-        if (selectedSymbols.length === 0) {
-          setSelectedSymbols(opts.slice(0, 12));
+        let response = null;
+        const endpoints = [
+          () => {
+            const p = new URLSearchParams();
+            if (startDate) p.append('start_date', startDate);
+            if (endDate) p.append('end_date', endDate);
+            return axiosInstance.get(`/api/symbols?${p.toString()}`);
+          },
+          () => axiosInstance.get('/api/getsymbols/symbols')
+        ];
+        
+        for (const endpoint of endpoints) {
+          try {
+            response = await endpoint();
+            if (response?.data && Array.isArray(response.data) && response.data.length > 0) {
+              break;
+            }
+          } catch (error) {
+            console.warn('Symbol endpoint failed:', error.message);
+            continue;
+          }
         }
-      } catch {}
+        
+        if (!response || !response.data) {
+          console.error('All symbol endpoints failed');
+          return;
+        }
+
+        const syms = Array.isArray(response.data) ? response.data : [];
+        const opts = syms.map(s => {
+          if (typeof s === 'string') {
+            return { value: s, label: s };
+          }
+          if (s && typeof s === 'object') {
+            const value = s.value ?? s.symbolref ?? s.symbol_ref ?? '';
+            const label = s.label ?? value;
+            return { value: String(value), label: String(label) };
+          }
+          return { value: String(s ?? ''), label: String(s ?? '') };
+        }).filter(opt => opt.value && opt.value.trim());
+
+        setSymbolOptions(opts);
+        if (selectedSymbols.length === 0) setSelectedSymbols(opts.slice(0, 12));
+      } catch (error) {
+        console.error('Error loading symbols:', error);
+      }
     };
     loadSymbols();
 
-    // initial fetch
     fetchLive().catch((e) => console.error('[DiffLot] fetch error:', e));
     return () => { if (controllerRef.current) controllerRef.current.abort(); };
   }, [startDate, endDate]);
 
   useEffect(() => {
-    // live polling depending on toggle
     if (timerRef.current) { clearInterval(timerRef.current); }
     if (liveEnabled) {
       timerRef.current = setInterval(() => {
@@ -114,12 +144,8 @@ const DiffLotPage = () => {
       const seriesObj = seriesMap[r.symbol_ref] || { vals: [], ts: [] };
       const series = seriesObj.vals || [];
       const ts = seriesObj.ts || [];
-      let val = parseFloat(r.difflot);
-      if (!Number.isFinite(val)) {
-        const buylot = parseFloat((r.buylot ?? r.buysize1)) || 0;
-        const selllot = parseFloat((r.selllot ?? r.sellsize1)) || 0;
-        val = buylot - selllot;
-      }
+      const val = parseFloat(r.difflot) || 0;
+      
       return (
         <div key={r.symbol_ref} className="metric-card">
           <SparklineCard

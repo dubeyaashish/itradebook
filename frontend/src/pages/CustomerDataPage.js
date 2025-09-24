@@ -531,6 +531,7 @@ const handleBulkDelete = async (rowsToDelete) => {
                                 <i className="fas fa-filter" />
                                 <span>Apply Filters</span>
                             </button>
+                            {/* Insert button is now always visible for all user types, including managed users */}
                             <button
                                 onClick={() => setShowInsertModal(true)}
                                 className="auth-button flex items-center justify-center gap-2 px-4 py-2 min-h-[44px]"

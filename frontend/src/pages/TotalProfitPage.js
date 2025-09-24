@@ -28,7 +28,7 @@ const TotalProfitPage = () => {
   const fetchLive = async () => {
     const token = localStorage.getItem(STORAGE_KEYS?.TOKEN) || localStorage.getItem('auth_token') || localStorage.getItem('token');
     console.log('[TotalProfit] fetching series…', { hasToken: !!token });
-    if (isFetchingRef.current) return; // avoid overlapping requests
+    if (isFetchingRef.current) return;
     isFetchingRef.current = true;
     controllerRef.current = new AbortController();
     if (rows.length === 0) setLoading(true);
@@ -73,17 +73,55 @@ const TotalProfitPage = () => {
   useEffect(() => {
     const loadSymbols = async () => {
       try {
-        const p = new URLSearchParams();
-        if (startDate) p.append('start_date', startDate);
-        if (endDate) p.append('end_date', endDate);
-        const res = await axiosInstance.get(`/api/symbols?${p.toString()}`);
-        const syms = Array.isArray(res.data) ? res.data : [];
-        const opts = syms.map(s => ({ value: s, label: s }));
+        let response = null;
+        const endpoints = [
+          () => {
+            const p = new URLSearchParams();
+            if (startDate) p.append('start_date', startDate);
+            if (endDate) p.append('end_date', endDate);
+            return axiosInstance.get(`/api/symbols?${p.toString()}`);
+          },
+          () => axiosInstance.get('/api/getsymbols/symbols')
+        ];
+        
+        for (const endpoint of endpoints) {
+          try {
+            response = await endpoint();
+            if (response?.data && Array.isArray(response.data) && response.data.length > 0) {
+              break;
+            }
+          } catch (error) {
+            console.warn('Symbol endpoint failed:', error.message);
+            continue;
+          }
+        }
+        
+        if (!response || !response.data) {
+          console.error('All symbol endpoints failed');
+          return;
+        }
+
+        const syms = Array.isArray(response.data) ? response.data : [];
+        const opts = syms.map(s => {
+          if (typeof s === 'string') {
+            return { value: s, label: s };
+          }
+          if (s && typeof s === 'object') {
+            const value = s.value ?? s.symbolref ?? s.symbol_ref ?? '';
+            const label = s.label ?? value;
+            return { value: String(value), label: String(label) };
+          }
+          return { value: String(s ?? ''), label: String(s ?? '') };
+        }).filter(opt => opt.value && opt.value.trim());
+
         setSymbolOptions(opts);
         if (selectedSymbols.length === 0) setSelectedSymbols(opts.slice(0, 12));
-      } catch {}
+      } catch (error) {
+        console.error('Error loading symbols:', error);
+      }
     };
     loadSymbols();
+
     fetchLive().catch((e) => console.error('[TotalProfit] fetch error:', e));
     return () => { if (controllerRef.current) controllerRef.current.abort(); };
   }, [startDate, endDate]);
@@ -106,14 +144,9 @@ const TotalProfitPage = () => {
       const seriesObj = seriesMap[r.symbol_ref] || { vals: [], ts: [] };
       const series = seriesObj.vals || [];
       const ts = seriesObj.ts || [];
-      let val = parseFloat(r.profit_total);
-      if (!Number.isFinite(val)) {
-        const buylot = parseFloat((r.buylot ?? r.buysize1)) || 0;
-        const avgbuy = parseFloat((r.avgbuy ?? r.buyprice1)) || 0;
-        const selllot = parseFloat((r.selllot ?? r.sellsize1)) || 0;
-        const avgsell = parseFloat((r.avgsell ?? r.sellprice1)) || 0;
-        val = (selllot * avgsell) - (buylot * avgbuy);
-      }
+      // Just use the database value - no calculation needed
+      const val = parseFloat(r.profit_total) || 0;
+      
       return (
         <div key={r.symbol_ref} className="metric-card">
           <SparklineCard
