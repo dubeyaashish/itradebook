@@ -127,19 +127,7 @@ const EodCustomerDataPage = () => {
     });
   };
 
-  // Format date
-  const formatDate = (dateString) => {
-    if (!dateString) return 'N/A';
-    try {
-      return new Date(dateString).toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric'
-      });
-    } catch {
-      return dateString;
-    }
-  };
+  // Date column removed (created_at shown instead)
 
   // Get cell class for position styling
   const getPositionClass = (positionType) => {
@@ -291,8 +279,10 @@ const EodCustomerDataPage = () => {
                   <th>Weighted Avg Buy Price</th>
                   <th>Weighted Avg Sell Price</th>
                   <th>Net Position</th>
-                  <th>Position Type</th>
-                  <th>Date</th>
+                  <th>Total Equity</th>
+                  <th>Total Balance</th>
+                  <th>Total Floating</th>
+                  <th>Last RefID</th>
                   <th>Created At</th>
                 </tr>
               </thead>
@@ -323,13 +313,17 @@ const EodCustomerDataPage = () => {
                         {formatNumber(row.net_position)}
                       </span>
                     </td>
-                    <td className="text-center">
-                      <span className={getPositionClass(row.position_type)}>
-                        {row.position_type?.toUpperCase() || 'N/A'}
-                      </span>
+                    <td className="text-right font-mono">
+                      {formatNumber(row.total_equity, 2)}
+                    </td>
+                    <td className="text-right font-mono">
+                      {formatNumber(row.total_balance, 2)}
+                    </td>
+                    <td className="text-right font-mono">
+                      {formatNumber(row.total_floating, 2)}
                     </td>
                     <td className="font-mono">
-                      {formatDate(row.date)}
+                      {row.last_refid || ''}
                     </td>
                     <td className="font-mono text-sm text-gray-600">
                       {new Date(row.created_at).toLocaleString()}

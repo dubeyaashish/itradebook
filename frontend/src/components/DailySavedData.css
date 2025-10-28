@@ -161,7 +161,13 @@
 .comment-head { display:flex; align-items:center; gap:.5rem; }
 .comment-user { font-weight: 700; color: var(--ink-900); }
 .comment-date { color: var(--ink-500); font-size: 0.8rem; font-weight: 600; }
-.comment-text { color: var(--ink-700); }
+.comment-text {
+  color: var(--ink-700);
+  /* Ensure very long words/URLs wrap instead of overflowing */
+  white-space: pre-wrap;         /* preserve newlines, wrap as needed */
+  word-break: break-word;        /* break long words */
+  overflow-wrap: anywhere;       /* break anywhere if needed */
+}
 
 .comment-delete {
   color: var(--neg-2); font-weight: 700; background: #fff; border: none; cursor: pointer;

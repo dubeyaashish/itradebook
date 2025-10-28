@@ -90,6 +90,18 @@ const Layout = ({ children }) => {
       label: 'EOD-CustomerData',
       icon: 'fas fa-user-clock',
       description: 'End-of-Day Customer Data API'
+    },
+    {
+      path: '/eod-balance',
+      label: 'EOD-Balance',
+      icon: 'fas fa-balance-scale',
+      description: 'End-of-Day Balance Data'
+    },
+    {
+      path: '/eod-lots',
+      label: 'EOD-Lots',
+      icon: 'fas fa-chart-pie',
+      description: 'End-of-Day Lots Ratio Data'
     }
       ]
     };
@@ -126,6 +138,12 @@ const Layout = ({ children }) => {
         label: 'Alerts',
         icon: 'fas fa-bell',
         description: 'Per-Symbol Alert Rules'
+      },
+      {
+        path: '/ide-float-report',
+        label: 'IDE Float Report',
+        icon: 'fas fa-file-signature',
+        description: 'Fill and export daily float report'
       },
       // New live metric pages
       {

@@ -66,34 +66,95 @@ module.exports = function(pool, { authenticateToken, getAllowedSymbols }) {
     });
 
     // Delete a comment
-    router.delete('/:id', authenticateToken, async (req, res) => {
-        const { id } = req.params;
-        
-        if (!id) {
-            return res.status(400).json({ success: false, message: 'Missing id' });
-        }
+router.delete('/:id', authenticateToken, async (req, res) => {
+    const { id } = req.params;
+    
+    if (!id) {
+        return res.status(400).json({ success: false, message: 'Missing id' });
+    }
 
-        let conn;
-        try {
-            conn = await pool.getConnection();
-            
-            // NO PERMISSION CHECKS - ALLOW EVERYONE TO DELETE ANY COMMENT
-            
-            // Delete the comment
-            const result = await conn.query('DELETE FROM trading_comments WHERE id = ?', [id]);
-            
-            if (result.affectedRows === 0) {
-                return res.status(404).json({ success: false, message: 'Comment not found or already deleted' });
-            }
-            
-            res.json({ success: true });
-        } catch (err) {
-            console.error('Delete comment error:', err);
-            res.status(500).json({ success: false, message: 'Server error occurred' });
-        } finally {
-            if (conn) conn.release();
+    let conn;
+    try {
+        conn = await pool.getConnection();
+        
+        // Check if comment exists and get owner info
+        const existingComment = await conn.query(
+            'SELECT user_id FROM trading_comments WHERE id = ?',
+            [id]
+        );
+        
+        if (existingComment.length === 0) {
+            return res.status(404).json({ success: false, message: 'Comment not found' });
         }
-    });
+        
+        // Only allow users to delete their own comments (or admins to delete any)
+        const isOwner = existingComment[0].user_id === (req.user.id || req.user.userId);
+        const isAdmin = req.user.user_type === 'admin' || req.user.userType === 'admin';
+        
+        if (!isOwner && !isAdmin) {
+            return res.status(403).json({ success: false, message: 'You can only delete your own comments' });
+        }
+        
+        // Delete the comment
+        const result = await conn.query('DELETE FROM trading_comments WHERE id = ?', [id]);
+        
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ success: false, message: 'Comment not found or already deleted' });
+        }
+        
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Delete comment error:', err);
+        res.status(500).json({ success: false, message: 'Server error occurred' });
+    } finally {
+        if (conn) conn.release();
+    }
+});
+
+router.post('/delete', authenticateToken, async (req, res) => {
+    const { id } = req.body;
+    
+    if (!id) {
+        return res.status(400).json({ success: false, message: 'Missing id' });
+    }
+
+    let conn;
+    try {
+        conn = await pool.getConnection();
+        
+        // Check if comment exists and get owner info
+        const existingComment = await conn.query(
+            'SELECT user_id FROM trading_comments WHERE id = ?',
+            [id]
+        );
+        
+        if (existingComment.length === 0) {
+            return res.status(404).json({ success: false, message: 'Comment not found' });
+        }
+        
+        // Only allow users to delete their own comments (or admins to delete any)
+        const isOwner = existingComment[0].user_id === (req.user.id || req.user.userId);
+        const isAdmin = req.user.user_type === 'admin' || req.user.userType === 'admin';
+        
+        if (!isOwner && !isAdmin) {
+            return res.status(403).json({ success: false, message: 'You can only delete your own comments' });
+        }
+        
+        // Delete the comment
+        const result = await conn.query('DELETE FROM trading_comments WHERE id = ?', [id]);
+        
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ success: false, message: 'Comment not found or already deleted' });
+        }
+        
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Delete comment error:', err);
+        res.status(500).json({ success: false, message: 'Server error occurred' });
+    } finally {
+        if (conn) conn.release();
+    }
+});
 
     return { router };
 };

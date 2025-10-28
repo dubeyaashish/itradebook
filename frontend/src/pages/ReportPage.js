@@ -356,26 +356,37 @@ const selectStyles = customSelectStyles;
                 </select>
               </div>
 
-              {/* 2025 Filter for Regular Users */}
-              {user?.user_type === 'regular' && (
-                <div className="form-group">
-                  <label>Order Filter</label>
-                  <button 
-                    onClick={() => setShow2025Only(!show2025Only)} 
-                    className={`w-full auth-button ${show2025Only ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}
-                  >
-                    {show2025Only ? '✓ Carryovers Only' : 'Show Carryovers'}
-                  </button>
-                </div>
-              )}
+              {/* Filter Type */}
+              <div className="form-group">
+                <label>Filter Type</label>
+                <select
+                  value={filters.filter_type}
+                  onChange={(e) => handleFilterChange('filter_type', e.target.value)}
+                >
+                  <option value="">All Types</option>
+                  <option value="snapshot">Snapshot</option>
+                </select>
+              </div>
             </div>
 
-            <div className="mt-4 col-span-1 md:col-span-2 lg:col-span-3 xl:col-span-4 flex flex-col sm:flex-row items-end justify-end gap-3">
-              <button onClick={() => loadData()} className="auth-button w-full sm:w-auto px-4 py-2">
-                <i className="fas fa-filter mr-2"></i>Apply Filters
+            {/* Action Buttons - Separate Row */}
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button onClick={() => loadData()} className="auth-button btn-wide flex items-center justify-center gap-2">
+                <i className="fas fa-filter"></i>
+                <span>Apply Filters</span>
               </button>
-              <button onClick={exportToCSV} className="auth-button-secondary w-full sm:w-auto px-4 py-2">
-                <i className="fas fa-download mr-2"></i>Export CSV
+              {user?.user_type === 'regular' && (
+                <button 
+                  onClick={() => setShow2025Only(!show2025Only)} 
+                  className={`auth-button btn-wide flex items-center justify-center gap-2 ${show2025Only ? '' : ''}`}
+                >
+                  <i className="fas fa-calendar-alt"></i>
+                  <span>{show2025Only ? '✓ Carryovers Only' : 'Show Carryovers'}</span>
+                </button>
+              )}
+              <button onClick={exportToCSV} className="auth-button-secondary btn-wide flex items-center justify-center gap-2">
+                <i className="fas fa-download"></i>
+                <span>Export CSV</span>
               </button>
             </div>
           </div>

@@ -81,7 +81,10 @@ module.exports = (pool, { authenticateToken, getAllowedSymbols }, dbHelpers) => 
           weighted_avg_sell_price,
           net_position,
           position_type,
-          date,
+          total_equity,
+          total_balance,
+          total_floating,
+          last_refid,
           created_at
         FROM customer_data_eod 
         WHERE ${whereClause}

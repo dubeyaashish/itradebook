@@ -39,17 +39,15 @@ const CustomerDataPage = () => {
     const [insertLoading, setInsertLoading] = useState(false);
 
     const [filters, setFilters] = useState({
-    start_date: '',
-    start_time: '',
-    end_date: '',
-    end_time: '',
+        start_date: '',
+        start_time: '',
+        end_date: '',
+        end_time: '',
         mt5: [],
         order_ref: [],
         symbol_ref: [],
         filter_type: '',
-        page: 1,
-        order_by: 'id',
-        order_dir: 'desc'
+        page: 1
     });
 
 
@@ -494,70 +492,44 @@ const handleBulkDelete = async (rowsToDelete) => {
                             </div>
                         </div>
 
-                        {/* Sort Order */}
-                        <div className="form-group">
-                            <label className="block text-sm font-medium text-gray-600 mb-1.5">Sort By</label>
-                            <div className="flex flex-col sm:flex-row gap-2">
-                                <select
-                                    value={filters.order_by}
-                                    onChange={(e) => handleFilterChange('order_by', e.target.value)}
-                                    className="flex-1 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 min-h-[44px]"
-                                >
-                                    <option value="id">ID</option>
-                                    <option value="datetime_server_ts_tz">Date</option>
-                                    <option value="mt5">Sub User</option>
-                                    <option value="order_ref">Order Ref</option>
-                                    <option value="profit_loss">P/L</option>
-                                    <option value="balance">Balance</option>
-                                    <option value="equity">Equity</option>
-                                </select>
-                                <select
-                                    value={filters.order_dir}
-                                    onChange={(e) => handleFilterChange('order_dir', e.target.value)}
-                                    className="w-full sm:w-24 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 min-h-[44px]"
-                                >
-                                    <option value="desc">DESC</option>
-                                    <option value="asc">ASC</option>
-                                </select>
-                            </div>
-                        </div>
+                        {/* Sort By removed for cleaner UI */}
+                    </div>
 
-                        {/* Action Buttons */}
-                        <div className="form-group action-row col-span-1 sm:col-span-2 lg:col-span-3 xl:col-span-4 flex flex-row flex-wrap items-end justify-end gap-2">
-                            <button
-                                onClick={loadData}
-                                className="auth-button flex items-center justify-center gap-2 px-4 py-2 min-h-[44px]"
+                    {/* Action Buttons - Separate Row */}
+                    <div className="mt-4 flex flex-wrap gap-3">
+                        <button
+                            onClick={loadData}
+                            className="auth-button btn-wide flex items-center justify-center gap-2"
+                        >
+                            <i className="fas fa-filter" />
+                            <span>Apply Filters</span>
+                        </button>
+                        {/* Insert button is now always visible for all user types, including managed users */}
+                        <button
+                            onClick={() => setShowInsertModal(true)}
+                            className="auth-button btn-wide flex items-center justify-center gap-2"
+                        >
+                            <i className="fas fa-plus" />
+                            <span>Insert New Record</span>
+                        </button>
+                        {user?.user_type === 'regular' && (
+                            <button 
+                                onClick={() => setShow2025Only(!show2025Only)} 
+                                className={`auth-button btn-wide flex items-center justify-center gap-2 ${show2025Only ? '' : ''}`}
                             >
-                                <i className="fas fa-filter" />
-                                <span>Apply Filters</span>
+                                <i className="fas fa-calendar-alt" />
+                                <span>{show2025Only ? '✓ 2025 Orders Only' : 'Show 2025 Orders'}</span>
                             </button>
-                            {/* Insert button is now always visible for all user types, including managed users */}
+                        )}
+                        {selectedRows.size > 0 && (
                             <button
-                                onClick={() => setShowInsertModal(true)}
-                                className="auth-button flex items-center justify-center gap-2 px-4 py-2 min-h-[44px]"
+                                onClick={() => handleBulkDelete(data.filter(row => selectedRows.has(row.id)))}
+                                className="auth-button btn-wide flex items-center justify-center gap-2"
                             >
-                                <i className="fas fa-plus" />
-                                <span>Insert New Record</span>
+                                <i className="fas fa-trash" />
+                                <span>Delete Selected ({selectedRows.size})</span>
                             </button>
-                            {user?.user_type === 'regular' && (
-                                <button 
-                                    onClick={() => setShow2025Only(!show2025Only)} 
-                                    className={`auth-button flex items-center justify-center gap-2 px-4 py-2 min-h-[44px] ${show2025Only ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}
-                                >
-                                    <i className="fas fa-calendar-alt" />
-                                    <span>{show2025Only ? '✓ 2025 Orders Only' : 'Show 2025 Orders'}</span>
-                                </button>
-                            )}
-                            {selectedRows.size > 0 && (
-                                <button
-                                    onClick={() => handleBulkDelete(data.filter(row => selectedRows.has(row.id)))}
-                                    className="auth-button bg-red-600 hover:bg-red-700 flex items-center justify-center gap-2 px-4 py-2 min-h-[44px]"
-                                >
-                                    <i className="fas fa-trash" />
-                                    <span>Delete Selected ({selectedRows.size})</span>
-                                </button>
-                            )}
-                        </div>
+                        )}
                     </div>
                 </div>
             </div>
@@ -797,13 +769,13 @@ const handleBulkDelete = async (rowsToDelete) => {
 
             {/* Insert Modal */}
             {showInsertModal && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-                    <div className="auth-card max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+                <div className="modal-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px', zIndex: 50 }}>
+                    <div className="auth-card" style={{ width: '100%', maxWidth: '720px', maxHeight: '90vh', overflowY: 'auto' }}>
                         <div className="auth-header">
                             <h2>Insert New Customer Data</h2>
                             <button 
                                 onClick={() => setShowInsertModal(false)}
-                                className="absolute top-4 right-4 text-gray-400 hover:text-white"
+                                className="modal-close"
                             >
                                 ×
                             </button>
@@ -812,7 +784,7 @@ const handleBulkDelete = async (rowsToDelete) => {
                         {insertError && <div className="error-message">{insertError}</div>}
 
                         <form onSubmit={handleInsertSubmit} className="auth-form">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px' }}>
                                 <div className="form-group">
                                     <label>MT5 ID *</label>
                                     <input
@@ -967,18 +939,18 @@ const handleBulkDelete = async (rowsToDelete) => {
                                 </div>
                             </div>
 
-                            <div className="flex gap-3 mt-6">
+                            <div className="flex" style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
                                 <button 
                                     type="button" 
                                     onClick={() => setShowInsertModal(false)}
-                                    className="auth-button-secondary flex-1"
+                                    className="auth-button-secondary flex-1 btn-wide"
                                 >
                                     Cancel
                                 </button>
                                 <button 
                                     type="submit" 
                                     disabled={insertLoading}
-                                    className="auth-button flex-1"
+                                    className="auth-button flex-1 btn-wide"
                                 >
                                     {insertLoading ? 'Inserting...' : 'Insert'}
                                 </button>

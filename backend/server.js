@@ -493,6 +493,49 @@ async function initializeTables() {
       )
     `);
 
+    // Create IDE Daily Float Comparison Report table
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS ide_daily_float_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        doc_number VARCHAR(32) NOT NULL UNIQUE,
+        report_date DATE NOT NULL,
+        client_name VARCHAR(255) NOT NULL,
+        opening_client DECIMAL(20,2) DEFAULT 0,
+        opening_company DECIMAL(20,2) DEFAULT 0,
+        opening_diff DECIMAL(20,2) DEFAULT 0,
+        closing_client DECIMAL(20,2) DEFAULT 0,
+        closing_company DECIMAL(20,2) DEFAULT 0,
+        closing_diff DECIMAL(20,2) DEFAULT 0,
+        daily_change_client DECIMAL(10,2) DEFAULT 0,
+        daily_change_company DECIMAL(10,2) DEFAULT 0,
+        daily_change_diff DECIMAL(10,2) DEFAULT 0,
+        winloss_client DECIMAL(20,2) DEFAULT 0,
+        winloss_company DECIMAL(20,2) DEFAULT 0,
+        winloss_diff DECIMAL(20,2) DEFAULT 0,
+        remarks TEXT,
+        status ENUM('draft','final') DEFAULT 'draft',
+        user_id INT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_report_date (report_date),
+        INDEX idx_user_id (user_id)
+      )
+    `);
+
+    // Audit logs for IDE Daily Float reports
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS ide_daily_float_report_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        report_id INT NOT NULL,
+        user_id INT NULL,
+        action ENUM('create','update','status') NOT NULL,
+        details JSON NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_report_id (report_id),
+        INDEX idx_action (action)
+      )
+    `);
+
     // P&L Report tables removed from initialization
 
     console.log('✓ Database tables initialized successfully');
@@ -516,7 +559,7 @@ async function initializeTables() {
 initializeTables();
 
 // Import route handlers with error handling
-let auth, rawData, report, comments, customerData, symbolNames, getsymbols, customerTrading, grids, eodReceive, eodCustomerData, alerts;
+let auth, rawData, report, comments, customerData, symbolNames, getsymbols, customerTrading, grids, eodReceive, eodCustomerData, eodBalance, eodLots, alerts, ideFloatReport, subUsers;
 
 const dbHelpers = { getDbConnection, executeQuery, executeTransaction, getPoolStats };
 
@@ -584,6 +627,13 @@ try {
 }
 
 try {
+  ideFloatReport = require('./routes/ideFloatReport')(pool, { authenticateToken, getAllowedSymbols }, dbHelpers);
+  console.log('✓ IDE Float Report routes loaded');
+} catch (error) {
+  console.error('✗ Error loading IDE Float Report routes:', error.message);
+}
+
+try {
   eodReceive = require('./routes/eodReceive')(pool, { authenticateToken, getAllowedSymbols }, dbHelpers);
   console.log('✓ EOD Receive routes loaded');
 } catch (error) {
@@ -595,6 +645,27 @@ try {
   console.log('✓ EOD Customer Data routes loaded');
 } catch (error) {
   console.error('✗ Error loading EOD Customer Data routes:', error.message);
+}
+
+try {
+  eodBalance = require('./routes/eodBalance')(pool, { authenticateToken, getAllowedSymbols }, dbHelpers);
+  console.log('✓ EOD Balance routes loaded');
+} catch (error) {
+  console.error('✗ Error loading EOD Balance routes:', error.message);
+}
+
+try {
+  eodLots = require('./routes/eodLots')(pool, { authenticateToken, getAllowedSymbols }, dbHelpers);
+  console.log('✓ EOD Lots routes loaded');
+} catch (error) {
+  console.error('✗ Error loading EOD Lots routes:', error.message);
+}
+
+try {
+  subUsers = require('./routes/subUsers')(pool, { authenticateToken, getAllowedSymbols });
+  console.log('✓ Sub Users routes loaded');
+} catch (error) {
+  console.error('✗ Error loading Sub Users routes:', error.message);
 }
 // Mount routes (more specific routes first to prevent conflicts)
 try {
@@ -738,6 +809,16 @@ try {
   console.error('✗ Error mounting getsymbols routes:', error.message);
 }
 
+// Mount IDE Daily Float Comparison Report routes
+try {
+  if (ideFloatReport && ideFloatReport.router) {
+    app.use('/api/ide-float-report', ideFloatReport.router);
+    console.log('✓ IDE Float Report routes mounted at /api/ide-float-report');
+  }
+} catch (error) {
+  console.error('✗ Error mounting IDE Float Report routes:', error.message);
+}
+
 // Mount customer trading routes
 try {
   if (customerTrading) {
@@ -777,6 +858,33 @@ try {
   }
 } catch (error) {
   console.error('✗ Error mounting EOD Customer Data routes:', error.message);
+}
+
+try {
+  if (eodBalance && eodBalance.router) {
+    app.use('/api/eod-balance', eodBalance.router);
+    console.log('✓ EOD Balance routes mounted at /api/eod-balance');
+  }
+} catch (error) {
+  console.error('✗ Error mounting EOD Balance routes:', error.message);
+}
+
+try {
+  if (eodLots && eodLots.router) {
+    app.use('/api/eod-lots', eodLots.router);
+    console.log('✓ EOD Lots routes mounted at /api/eod-lots');
+  }
+} catch (error) {
+  console.error('✗ Error mounting EOD Lots routes:', error.message);
+}
+
+try {
+  if (subUsers && subUsers.router) {
+    app.use('/api/sub-users', subUsers.router);
+    console.log('✓ Sub Users routes mounted at /api/sub-users');
+  }
+} catch (error) {
+  console.error('✗ Error mounting Sub Users routes:', error.message);
 }
 // Health check
 app.get('/api/health', (req, res) => {
@@ -1144,23 +1252,12 @@ const broadcastTradingDataUpdate = async () => {
       return;
     }
     
-    // Set timezone to Bangkok
+    // Set timezone to Bangkok and compute start/end of day in-session
     await conn.query("SET time_zone = '+07:00'");
-      
-      // Get current day data
-      const now = new Date();
-      const bangkokOffset = 7 * 60; // UTC+7 in minutes
-      const localOffset = now.getTimezoneOffset();
-      const bangkokTime = new Date(now.getTime() + (bangkokOffset + localOffset) * 60000);
-      
-      const year = bangkokTime.getFullYear();
-      const month = String(bangkokTime.getMonth() + 1).padStart(2, '0');
-      const day = String(bangkokTime.getDate()).padStart(2, '0');
-      
-      const startOfDay = `${year}-${month}-${day} 00:00:00`;
-      const startOfNextDay = new Date(bangkokTime);
-      startOfNextDay.setDate(startOfNextDay.getDate() + 1);
-      const endOfDay = `${startOfNextDay.getFullYear()}-${String(startOfNextDay.getMonth() + 1).padStart(2, '0')}-${String(startOfNextDay.getDate()).padStart(2, '0')} 00:00:00`;
+    const startRow = await conn.query("SELECT DATE_FORMAT(CURDATE(), '%Y-%m-%d 00:00:00') AS startOfDay");
+    const startOfDay = startRow[0].startOfDay;
+    const endRow = await conn.query("SELECT DATE_FORMAT(DATE_ADD(CURDATE(), INTERVAL 1 DAY), '%Y-%m-%d 00:00:00') AS endOfDay");
+    const endOfDay = endRow[0].endOfDay;
 
       // Get random symbol to update (simulate real-time change)
       const symbolQuery = 'SELECT DISTINCT symbolref FROM `receive.itradebook` WHERE `date` >= ? AND `date` < ? ORDER BY RAND() LIMIT 1';
@@ -1315,25 +1412,60 @@ const broadcastCustomerTradingUpdate = async () => {
             AND su.symbol_ref = ?
           GROUP BY su.symbol_ref
         `;
-        
-        const aggregateResult = await conn.query(aggregateQuery, [startOfDay, endOfDay, randomSymbol]);
-        
-        if (aggregateResult.length > 0) {
+
+        const latestTotalsQuery = `
+          SELECT 
+            SUM(CAST(REPLACE(COALESCE(cd.equity, '0'), ',', '') AS DECIMAL(18,2))) AS total_equity,
+            SUM(CAST(REPLACE(COALESCE(cd.balance, '0'), ',', '') AS DECIMAL(18,2))) AS total_balance,
+            SUM(CAST(REPLACE(COALESCE(cd.floating, '0'), ',', '') AS DECIMAL(18,2))) AS total_floating,
+            SUBSTRING_INDEX(
+              MAX(CONCAT(
+                DATE_FORMAT(cd.created_at, '%Y-%m-%d %H:%i:%s'), '|', LPAD(cd.id, 10, '0'), '|', COALESCE(cd.order_ref, '')
+              )),
+              '|', -1
+            ) AS last_refid
+          FROM customer_data cd
+          JOIN (
+              SELECT 
+                  cd2.mt5,
+                  MAX(cd2.created_at) as max_created_at,
+                  MAX(cd2.id) as max_id
+              FROM customer_data cd2
+              JOIN sub_users su2 ON cd2.mt5 = su2.sub_username
+              WHERE su2.symbol_ref = ?
+                AND cd2.datetime_server_ts_tz >= ? 
+                AND cd2.datetime_server_ts_tz < ? 
+                AND cd2.price BETWEEN 2000 AND 4000
+              GROUP BY cd2.mt5
+          ) latest ON cd.mt5 = latest.mt5 AND cd.created_at = latest.max_created_at AND cd.id = latest.max_id
+          JOIN sub_users su3 ON cd.mt5 = su3.sub_username
+          WHERE su3.symbol_ref = ?
+            AND cd.datetime_server_ts_tz >= ? 
+            AND cd.datetime_server_ts_tz < ? 
+            AND cd.price BETWEEN 2000 AND 4000
+        `;
+
+        const [aggregateResult, totalsRow] = await Promise.all([
+          conn.query(aggregateQuery, [startOfDay, endOfDay, randomSymbol]),
+          conn.query(latestTotalsQuery, [randomSymbol, startOfDay, endOfDay, randomSymbol, startOfDay, endOfDay])
+        ]);
+
+        if (aggregateResult.length > 0 && totalsRow.length > 0) {
           const row = aggregateResult[0];
+          const t = totalsRow[0];
           const formattedData = {
             symbol_ref: row.symbol_ref,
             total_buy_size: parseFloat(row.total_buy_size) || 0,
             total_sell_size: parseFloat(row.total_sell_size) || 0,
             weighted_avg_buy_price: parseFloat(row.weighted_avg_buy_price) || 0,
             weighted_avg_sell_price: parseFloat(row.weighted_avg_sell_price) || 0,
-            total_equity: Math.random() * 10000, // Simulate changing equity
-            total_balance: Math.random() * 8000, // Simulate changing balance  
-            total_floating: (Math.random() - 0.5) * 1000, // Simulate changing floating
-            last_refid: Date.now().toString(),
+            total_equity: parseFloat(t.total_equity || 0),
+            total_balance: parseFloat(t.total_balance || 0),
+            total_floating: parseFloat(t.total_floating || 0),
+            last_refid: t.last_refid || '',
             net_position: (parseFloat(row.total_buy_size) || 0) - (parseFloat(row.total_sell_size) || 0)
           };
-          
-          // Broadcast the update
+
           io.emit('customer_trading_update', formattedData);
           console.log(`📡 Broadcasted customer trading update for symbol: ${randomSymbol}`);
         }

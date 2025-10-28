@@ -20,10 +20,13 @@ import CustomerTradingPage from './pages/CustomerTradingPage';
 import GridsPage from './pages/GridsPage';
 import EodReceivePage from './pages/EodReceivePage';
 import EodCustomerDataPage from './pages/EodCustomerDataPage';
+import EodBalancePage from './pages/EodBalancePage';
+import EodLotsPage from './pages/EodLotsPage';
 import ProfitRatioPage from './pages/ProfitRatioPage';
 import DiffLotPage from './pages/DiffLotPage';
 import TotalProfitPage from './pages/TotalProfitPage';
 import AlertsConfigPage from './pages/AlertsConfigPage';
+import IdeFloatReportPage from './pages/IdeFloatReportPage';
 
 import './App.css';
 
@@ -429,6 +432,22 @@ const App = () => {
               </ProtectedRoute>
             } 
           />
+          <Route 
+            path="/eod-balance" 
+            element={
+              <ProtectedRoute>
+                <EodBalancePage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/eod-lots" 
+            element={
+              <ProtectedRoute>
+                <EodLotsPage />
+              </ProtectedRoute>
+            } 
+          />
 
           {/* Live metric pages */}
           <Route 
@@ -454,6 +473,16 @@ const App = () => {
                 <TotalProfitPage />
               </ProtectedRoute>
             } 
+          />
+          <Route
+            path="/ide-float-report"
+            element={
+              <ProtectedRoute>
+                <NonManagedOnly>
+                  <IdeFloatReportPage />
+                </NonManagedOnly>
+              </ProtectedRoute>
+            }
           />
           <Route
             path="/alerts"

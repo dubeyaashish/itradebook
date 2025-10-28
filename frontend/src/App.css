@@ -310,7 +310,7 @@ body {
   color: var(--accent-primary);
   border: 1px solid var(--accent-primary);
   border-radius: var(--radius-md);
-  padding: 0.75rem 1rem;
+  padding: 0.875rem 1rem; /* match primary height */
   font-size: 0.875rem;
   font-weight: 500;
   text-decoration: none;
@@ -324,6 +324,36 @@ body {
   background: var(--accent-primary);
   color: white;
   transform: translateY(-1px);
+}
+
+/* Utility: make buttons same width/height */
+.btn-wide {
+  min-width: 150px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.875rem 1rem !important;
+}
+
+/* Filter action row layout */
+.action-row {
+  display: flex;
+  flex-wrap: wrap; /* wrap by default so nothing disappears */
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: flex-end;
+  grid-column: 1 / -1; /* span full grid width when inside a grid */
+  margin-top: 0.5rem;
+}
+
+/* On medium+ screens, keep in a single row */
+@media (min-width: 768px) {
+  .action-row { flex-wrap: nowrap; }
+}
+
+.action-row .auth-button,
+.action-row .auth-button-secondary {
+  margin-top: 0; /* override default top margin */
 }
 
 /* Links and Dividers */
@@ -559,10 +589,12 @@ body {
 }
 
 /* Table responsive wrapper */
-.table-wrapper {
+.table-wrapper,
+.table-responsive {
   overflow-x: auto;
   max-height: 600px;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch; /* smooth scroll on iOS */
 }
 
 /* Badge styles for status/type indicators */

@@ -26,7 +26,7 @@ const api = {
       return res.data;
     },
     delete: async (id) => {
-      await axios.delete(`/api/comments/${id}`);
+      await axios.post('/api/comments/delete', { id });
       return { id };
     },
   },
@@ -48,6 +48,12 @@ const api = {
     delete: async (symbolRef) => {
       await axios.delete(`/api/symbol-names/${symbolRef}`);
       return { symbol_ref: symbolRef };
+    },
+  },
+  subUsers: {
+    getBySymbol: async (symbolRef) => {
+      const res = await axios.get(`/api/sub-users/by-symbol/${symbolRef}`);
+      return res.data;
     },
   },
 };
@@ -324,6 +330,7 @@ CustomSymbolName.displayName = 'CustomSymbolName';
 const Comments = React.memo(({ symbolRef, comments, onAddComment, onDeleteComment, isAddingComment, isDeletingComment }) => {
   const [value, setValue] = useState('');
   const [showAll, setShowAll] = useState(false);
+  const [hasAlertedTooLong, setHasAlertedTooLong] = useState(false);
   
   const overflow = comments.length > 3;
   const visible = showAll ? comments : comments.slice(-3);
@@ -332,9 +339,14 @@ const Comments = React.memo(({ symbolRef, comments, onAddComment, onDeleteCommen
 
   const handleSubmit = useCallback((e) => {
     e.preventDefault();
-    if (!value.trim() || tooLong) return;
+    if (!value.trim()) return;
+    if (tooLong) {
+      window.alert(`Comment is too long. Max ${MAX_COMMENT_LEN} characters.`);
+      return;
+    }
     onAddComment({ symbolRef, text: value.trim() });
     setValue('');
+    setHasAlertedTooLong(false);
   }, [value, tooLong, onAddComment, symbolRef]);
 
   const handleKeyDown = useCallback((e) => {
@@ -347,6 +359,18 @@ const Comments = React.memo(({ symbolRef, comments, onAddComment, onDeleteCommen
       handleSubmit(e);
     }
   }, [handleSubmit]);
+
+  // One-time alert when crossing the limit while typing
+  useEffect(() => {
+    const isOver = value.length > MAX_COMMENT_LEN;
+    if (isOver && !hasAlertedTooLong) {
+      setHasAlertedTooLong(true);
+      window.alert(`Comment is too long. Max ${MAX_COMMENT_LEN} characters.`);
+    }
+    if (!isOver && hasAlertedTooLong) {
+      setHasAlertedTooLong(false);
+    }
+  }, [value, hasAlertedTooLong]);
 
   const handleDelete = useCallback((commentId) => {
     if (window.confirm('Delete this comment?')) {
@@ -440,6 +464,95 @@ const Comments = React.memo(({ symbolRef, comments, onAddComment, onDeleteCommen
 
 Comments.displayName = 'Comments';
 
+// SubUsernames component
+const SubUsernames = React.memo(({ symbolRef, isVisible, onClose }) => {
+  const { data: subUsersResponse, isLoading, error } = useQuery({
+    queryKey: ['subUsers', symbolRef],
+    queryFn: () => api.subUsers.getBySymbol(symbolRef),
+    enabled: isVisible && Boolean(symbolRef),
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    gcTime: GC_TIME,
+  });
+
+  const subUsers = subUsersResponse?.data || [];
+
+  if (!isVisible) return null;
+
+  return (
+    <div className="sub-users-modal">
+      <div className="sub-users-overlay" onClick={onClose} />
+      <div className="sub-users-content">
+        <div className="sub-users-header">
+          <h3>Users for {symbolRef}</h3>
+          <button onClick={onClose} className="close-btn" aria-label="Close">
+            <i className="fas fa-times" />
+          </button>
+        </div>
+        
+        <div className="sub-users-body">
+          {isLoading && (
+            <div className="loading-state">
+              <div className="spinner-small" />
+              <span>Loading users...</span>
+            </div>
+          )}
+          
+          {error && (
+            <div className="error-state">
+              <i className="fas fa-exclamation-triangle" />
+              <span>Failed to load users</span>
+            </div>
+          )}
+          
+          {!isLoading && !error && (
+            <>
+              {subUsers.length === 0 ? (
+                <div className="empty-state">
+                  <i className="fas fa-users" />
+                  <span>No users found for this symbol</span>
+                </div>
+              ) : (
+                <div className="sub-users-list">
+                  <div className="sub-users-count">
+                    {subUsers.length} user{subUsers.length !== 1 ? 's' : ''} found
+                  </div>
+                  <div className="users-list-container">
+                    {subUsers.map((subUser, index) => (
+                      <div key={subUser.sub_username || index} className="user-list-item">
+                        <div className="user-avatar">
+                          {getInitials(subUser.sub_username)}
+                        </div>
+                        <div className="user-details">
+                          <div className="user-name">{subUser.sub_username}</div>
+                          <div className="user-meta">
+                            <span className={`user-status ${subUser.status === 'active' ? 'active' : 'inactive'}`}>
+                              {subUser.status}
+                            </span>
+                            {subUser.created_at && (
+                              <span className="user-join-date">
+                                Joined {new Date(subUser.created_at).toLocaleDateString()}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="user-actions">
+                          <i className="fas fa-chevron-right" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+SubUsernames.displayName = 'SubUsernames';
+
 // Trading card component
 const TradingCard = React.memo(({ 
   item, 
@@ -456,6 +569,7 @@ const TradingCard = React.memo(({
   const profitRatio = Number(item.profit_ratio || 0);
   const isProfit = profitRatio >= 0;
   const [isEditingName, setIsEditingName] = useState(false);
+  const [showSubUsers, setShowSubUsers] = useState(false);
   // Normalize timestamp for display: prefer `item.timestamp`, fall back to `item.date`.
   // Convert numeric-strings (e.g. '1757911190') to Number so `formatDate` heuristics work predictably.
   const rawTs = item.timestamp ?? item.date;
@@ -521,6 +635,18 @@ const TradingCard = React.memo(({
               ${formatNumber(item.profit_total)}
             </div>
           </div>
+        </div>
+
+        {/* See More Button */}
+        <div className="card-actions">
+          <button 
+            onClick={() => setShowSubUsers(true)}
+            className="see-more-btn"
+            title="View users for this symbol"
+          >
+            <i className="fas fa-users" />
+            <span>See Users</span>
+          </button>
         </div>
 
         {/* Key Metrics */}
@@ -672,6 +798,13 @@ const TradingCard = React.memo(({
           isDeletingComment={isDeletingComment}
         />
       </div>
+
+      {/* Users Modal */}
+      <SubUsernames 
+        symbolRef={item.symbol_ref}
+        isVisible={showSubUsers}
+        onClose={() => setShowSubUsers(false)}
+      />
 
       {/* Action Buttons removed from card-level; now controlled at page header */}
     </div>
@@ -1560,7 +1693,10 @@ useEffect(() => {
         color: #cbd5e1;
         font-size: 0.875rem;
         line-height: 1.4;
-        word-wrap: break-word;
+        /* Robust wrapping for long words/URLs and preserving newlines */
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-wrap: anywhere;
       }
 
       .comment-delete {
@@ -1884,7 +2020,443 @@ useEffect(() => {
           width: 100%;
         }
       }
+
+      /* Card Actions */
+      .card-actions {
+        margin-bottom: 1.5rem;
+        display: flex;
+        justify-content: flex-end;
+      }
+
+      .see-more-btn {
+        background: rgba(59, 130, 246, 0.1);
+        border: 1px solid rgba(59, 130, 246, 0.2);
+        color: #3b82f6;
+        padding: 0.5rem 1rem;
+        border-radius: 0.5rem;
+        cursor: pointer;
+        transition: all 0.2s;
+        font-size: 0.875rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-weight: 500;
+      }
+
+      .see-more-btn:hover {
+        background: rgba(59, 130, 246, 0.2);
+        border-color: rgba(59, 130, 246, 0.3);
+        transform: translateY(-1px);
+      }
+
+      .see-more-btn:active {
+        transform: translateY(0);
+      }
+
+      /* Sub Users Modal */
+      .sub-users-modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+        animation: fadeIn 0.3s ease-out;
+      }
+
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+
+      @keyframes slideUp {
+        from {
+          opacity: 0;
+          transform: translateY(20px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .sub-users-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.8);
+        backdrop-filter: blur(8px);
+        cursor: pointer;
+      }
+
+      .sub-users-content {
+        background: linear-gradient(145deg, rgba(30, 41, 59, 0.98), rgba(15, 23, 42, 0.98));
+        backdrop-filter: blur(20px);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 1.25rem;
+        max-width: 700px;
+        width: 100%;
+        max-height: 85vh;
+        overflow: hidden;
+        box-shadow: 
+          0 25px 50px -12px rgba(0, 0, 0, 0.6),
+          0 0 0 1px rgba(255, 255, 255, 0.05),
+          inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        position: relative;
+        z-index: 1001;
+        animation: slideUp 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      .sub-users-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 2rem 2rem 1rem 2rem;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+        background: linear-gradient(90deg, rgba(59, 130, 246, 0.1), rgba(16, 185, 129, 0.1));
+        position: relative;
+      }
+
+      .sub-users-header::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.5), transparent);
+      }
+
+      .sub-users-header h3 {
+        color: #f8fafc;
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .sub-users-header h3::before {
+        content: '';
+        width: 4px;
+        height: 24px;
+        background: linear-gradient(135deg, #3b82f6, #10b981);
+        border-radius: 2px;
+      }
+
+      .close-btn {
+        background: rgba(148, 163, 184, 0.1);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        color: #94a3b8;
+        cursor: pointer;
+        padding: 0.75rem;
+        border-radius: 0.75rem;
+        transition: all 0.3s ease;
+        width: 44px;
+        height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.1rem;
+      }
+
+      .close-btn:hover {
+        color: #ef4444;
+        background: rgba(239, 68, 68, 0.15);
+        border-color: rgba(239, 68, 68, 0.3);
+        transform: scale(1.05);
+      }
+
+      .sub-users-body {
+        padding: 2rem;
+        max-height: calc(85vh - 120px);
+        overflow-y: auto;
+      }
+
+      .sub-users-body::-webkit-scrollbar {
+        width: 6px;
+      }
+
+      .sub-users-body::-webkit-scrollbar-track {
+        background: rgba(148, 163, 184, 0.1);
+        border-radius: 3px;
+      }
+
+      .sub-users-body::-webkit-scrollbar-thumb {
+        background: rgba(59, 130, 246, 0.4);
+        border-radius: 3px;
+      }
+
+      .sub-users-body::-webkit-scrollbar-thumb:hover {
+        background: rgba(59, 130, 246, 0.6);
+      }
+
+      .loading-state, .error-state, .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 3rem 2rem;
+        text-align: center;
+        color: #94a3b8;
+      }
+
+      .loading-state i, .error-state i, .empty-state i {
+        font-size: 3rem;
+        margin-bottom: 1rem;
+        opacity: 0.7;
+      }
+
+      .error-state {
+        color: #fca5a5;
+      }
+
+      .error-state i {
+        color: #ef4444;
+      }
+
+      .empty-state i {
+        color: #6b7280;
+      }
+
+      .spinner-small {
+        width: 32px;
+        height: 32px;
+        border: 3px solid rgba(59, 130, 246, 0.1);
+        border-top: 3px solid #3b82f6;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-bottom: 1rem;
+      }
+
+      .sub-users-count {
+        color: #e2e8f0;
+        font-size: 1rem;
+        margin-bottom: 1.5rem;
+        text-align: center;
+        font-weight: 600;
+        padding: 0.75rem 1.5rem;
+        background: rgba(59, 130, 246, 0.1);
+        border: 1px solid rgba(59, 130, 246, 0.2);
+        border-radius: 0.75rem;
+        backdrop-filter: blur(10px);
+      }
+
+      .users-list-container {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+
+      .user-list-item {
+        display: flex;
+        align-items: center;
+        padding: 1rem 1.25rem;
+        background: rgba(15, 23, 42, 0.3);
+        border: 1px solid rgba(148, 163, 184, 0.1);
+        border-radius: 0.75rem;
+        transition: all 0.3s ease;
+        cursor: pointer;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .user-list-item::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        background: linear-gradient(180deg, #3b82f6, #10b981);
+        transform: scaleY(0);
+        transition: transform 0.3s ease;
+      }
+
+      .user-list-item:hover {
+        background: rgba(30, 41, 59, 0.6);
+        border-color: rgba(59, 130, 246, 0.3);
+        transform: translateX(4px);
+      }
+
+      .user-list-item:hover::before {
+        transform: scaleY(1);
+      }
+
+      .user-avatar {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #3b82f6, #06b6d4);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-size: 0.95rem;
+        font-weight: 700;
+        flex-shrink: 0;
+        margin-right: 1rem;
+        box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+        transition: all 0.3s ease;
+      }
+
+      .user-list-item:hover .user-avatar {
+        transform: scale(1.05);
+        box-shadow: 0 4px 16px rgba(59, 130, 246, 0.4);
+      }
+
+      .user-details {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .user-name {
+        color: #f8fafc;
+        font-size: 1.1rem;
+        font-weight: 600;
+        margin-bottom: 0.25rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .user-meta {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
+
+      .user-status {
+        font-size: 0.8rem;
+        font-weight: 600;
+        padding: 0.25rem 0.75rem;
+        border-radius: 1rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+      }
+
+      .user-status::before {
+        content: '';
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .user-status.active {
+        background: rgba(16, 185, 129, 0.2);
+        color: #10b981;
+        border: 1px solid rgba(16, 185, 129, 0.4);
+      }
+
+      .user-status.inactive {
+        background: rgba(239, 68, 68, 0.2);
+        color: #ef4444;
+        border: 1px solid rgba(239, 68, 68, 0.4);
+      }
+
+      .user-join-date {
+        color: #94a3b8;
+        font-size: 0.875rem;
+        font-weight: 500;
+      }
+
+      .user-actions {
+        color: #64748b;
+        font-size: 0.875rem;
+        transition: all 0.3s ease;
+        opacity: 0.6;
+      }
+
+      .user-list-item:hover .user-actions {
+        color: #3b82f6;
+        opacity: 1;
+        transform: translateX(2px);
+      }
+
+      /* Responsive adjustments for modal */
+      @media (max-width: 768px) {
+        .sub-users-modal {
+          padding: 0.5rem;
+        }
+        
+        .sub-users-content {
+          max-height: 95vh;
+          border-radius: 1rem;
+        }
+
+        .sub-users-header {
+          padding: 1.5rem 1.5rem 1rem 1.5rem;
+        }
+
+        .sub-users-header h3 {
+          font-size: 1.25rem;
+        }
+
+        .sub-users-body {
+          padding: 1.5rem;
+        }
+
+        .user-list-item {
+          padding: 0.875rem 1rem;
+        }
+
+        .user-avatar {
+          width: 40px;
+          height: 40px;
+          font-size: 0.875rem;
+          margin-right: 0.875rem;
+        }
+
+        .user-name {
+          font-size: 1rem;
+        }
+
+        .user-meta {
+          gap: 0.75rem;
+        }
+        
+        .card-actions {
+          justify-content: center;
+        }
+      }
+
+      @media (max-width: 480px) {
+        .sub-users-header {
+          padding: 1rem;
+        }
+
+        .sub-users-body {
+          padding: 1rem;
+        }
+
+        .user-list-item {
+          padding: 0.75rem;
+        }
+
+        .user-meta {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 0.5rem;
+        }
+      }
     `;
+    
 
     const styleSheet = document.createElement("style");
     styleSheet.textContent = styles;
